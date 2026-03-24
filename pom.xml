@@ -17,7 +17,44 @@
         <junit.version>5.11.4</junit.version>
         <langchain4j.version>1.12.2</langchain4j.version>
         <langgraph4j.version>1.6.0-beta5</langgraph4j.version>
+        <os.affix>unknown</os.affix>
     </properties>
+
+    <profiles>
+        <profile>
+            <id>os-mac</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                </os>
+            </activation>
+            <properties>
+                <os.affix>mac</os.affix>
+            </properties>
+        </profile>
+        <profile>
+            <id>os-windows</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <os.affix>windows</os.affix>
+            </properties>
+        </profile>
+        <profile>
+            <id>os-linux</id>
+            <activation>
+                <os>
+                    <name>Linux</name>
+                </os>
+            </activation>
+            <properties>
+                <os.affix>linux</os.affix>
+            </properties>
+        </profile>
+    </profiles>
 
     <dependencies>
         <dependency>
@@ -82,6 +119,21 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <version>3.4.0</version>
+                <configuration>
+                    <filesets>
+                        <fileset>
+                            <directory>${project.basedir}/deploy</directory>
+                            <includes>
+                                <include>spqr-latin-chat-*.zip</include>
+                            </includes>
+                        </fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
@@ -121,6 +173,28 @@
                         <configuration>
                             <outputDirectory>${project.build.directory}/lib</outputDirectory>
                             <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>build-deploy-zip</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <descriptors>
+                                <descriptor>src/assembly/deploy.xml</descriptor>
+                            </descriptors>
+                            <finalName>spqr-latin-chat-${project.version}_${os.affix}</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <outputDirectory>${project.basedir}/deploy</outputDirectory>
                         </configuration>
                     </execution>
                 </executions>
