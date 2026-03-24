@@ -1,10 +1,13 @@
 package com.passivlingo.latinchat.ui;
 
+import com.passivlingo.latinchat.agent.GrammarAgentGraph;
 import com.passivlingo.latinchat.agent.LatinAgentGraph;
 import com.passivlingo.latinchat.config.ApiKeyStore;
+import com.passivlingo.latinchat.config.AppPaths;
 import com.passivlingo.latinchat.data.ChatService;
 import com.passivlingo.latinchat.model.Conversation;
 import com.passivlingo.latinchat.model.ConversationWebTab;
+import com.passivlingo.latinchat.model.GrammarAnalysisResult;
 import com.passivlingo.latinchat.model.Message;
 import com.passivlingo.latinchat.platform.EnvVarInstaller;
 import com.passivlingo.latinchat.util.MarkdownRenderer;
@@ -27,6 +30,7 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.web.WebHistory;
 import javafx.scene.web.WebEngine;
@@ -36,19 +40,24 @@ import netscape.javascript.JSObject;
 import javafx.util.Duration;
 
 import java.sql.SQLException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Pattern;
 
 public final class MainWindow {
     private static final int CONTEXT_MESSAGE_LIMIT = 24;
+    private static final Pattern WORD_PATTERN = Pattern.compile("\\p{L}[\\p{L}\\p{M}\\-]*");
+    private static final Pattern SENTENCE_BOUNDARY = Pattern.compile("(?<=[.!?])\\s+");
 
     private final Stage stage;
     private final ChatService chatService;
     private final LatinAgentGraph agentGraph;
+    private final GrammarAgentGraph grammarAgentGraph;
     private final ApiKeyStore keyStore;
     private final MarkdownRenderer markdownRenderer;
     private final HostServices hostServices;
@@ -70,6 +79,7 @@ public final class MainWindow {
     public MainWindow(Stage stage,
                       ChatService chatService,
                       LatinAgentGraph agentGraph,
+                      GrammarAgentGraph grammarAgentGraph,
                       ApiKeyStore keyStore,
                       MarkdownRenderer markdownRenderer,
                       String initialApiKey,
@@ -77,6 +87,7 @@ public final class MainWindow {
         this.stage = stage;
         this.chatService = chatService;
         this.agentGraph = agentGraph;
+        this.grammarAgentGraph = grammarAgentGraph;
         this.keyStore = keyStore;
         this.markdownRenderer = markdownRenderer;
         this.runtimeApiKey = initialApiKey;
@@ -123,16 +134,57 @@ public final class MainWindow {
 
     private MenuBar createMenuBar() {
         Menu fileMenu = new Menu("File");
+        Menu helpMenu = new Menu("Help");
+
         MenuItem setKey = new MenuItem("Set OpenAI Key");
         MenuItem clearKey = new MenuItem("Clear OpenAI Key");
         MenuItem exit = new MenuItem("Exit");
+        MenuItem databaseLocation = new MenuItem("Database location");
+        MenuItem about = new MenuItem("About");
 
         setKey.setOnAction(e -> setOpenAiKey());
         clearKey.setOnAction(e -> clearOpenAiKey());
         exit.setOnAction(e -> Platform.exit());
+        databaseLocation.setOnAction(e -> showDatabaseLocation());
+        about.setOnAction(e -> showAboutDialog());
 
         fileMenu.getItems().addAll(setKey, clearKey, new SeparatorMenuItem(), exit);
-        return new MenuBar(fileMenu);
+        helpMenu.getItems().addAll(databaseLocation, new SeparatorMenuItem(), about);
+        return new MenuBar(fileMenu, helpMenu);
+    }
+
+    private void showDatabaseLocation() {
+        Path dbPath = AppPaths.appHome().resolve("latin_chat.db").toAbsolutePath();
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, dbPath.toString(), ButtonType.OK);
+        alert.setTitle("Database location");
+        alert.setHeaderText("SQLite database file");
+        alert.showAndWait();
+    }
+
+    private void showAboutDialog() {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, "", ButtonType.OK);
+        alert.setTitle("About");
+        alert.setHeaderText("SPQR Latin Chat");
+
+        ImageView icon = new ImageView(AppIconFactory.createSpqrIcon(64));
+        icon.setFitWidth(64);
+        icon.setFitHeight(64);
+        alert.getDialogPane().setGraphic(icon);
+
+        Label description = new Label(
+                "SPQR Latin Chat helps you practice Latin conversations, analyze grammar in context, and translate selected text."
+        );
+        description.setWrapText(true);
+
+        Label designNote = new Label(
+                "All images and design elements were created manually or with AI assistance."
+        );
+        designNote.setWrapText(true);
+        designNote.setStyle("-fx-text-fill: #475569;");
+
+        VBox content = new VBox(10, description, designNote);
+        alert.getDialogPane().setContent(content);
+        alert.showAndWait();
     }
 
     private Pane createSidebar() {
@@ -150,7 +202,32 @@ public final class MainWindow {
             @Override
             protected void updateItem(Conversation item, boolean empty) {
                 super.updateItem(item, empty);
-                setText(empty || item == null ? null : item.title());
+                if (empty || item == null) {
+                    setText(null);
+                    setGraphic(null);
+                    setTooltip(null);
+                    return;
+                }
+
+                Label titleLabel = new Label(item.title());
+                titleLabel.setMaxWidth(Double.MAX_VALUE);
+                HBox.setHgrow(titleLabel, Priority.ALWAYS);
+
+                if (item.includeWebSearch()) {
+                    Label globe = new Label("🌐");
+                    globe.setStyle("-fx-font-size: 13px;");
+                    Tooltip.install(globe, new Tooltip("Web search is enabled for this chat"));
+
+                    HBox row = new HBox(8, titleLabel, globe);
+                    row.setAlignment(Pos.CENTER_LEFT);
+                    setText(null);
+                    setGraphic(row);
+                    setTooltip(null);
+                } else {
+                    setText(null);
+                    setGraphic(titleLabel);
+                    setTooltip(null);
+                }
             }
         });
 
@@ -217,6 +294,20 @@ public final class MainWindow {
 
             String href = hrefAtPoint(event.getX(), event.getY());
             if (href == null || href.isBlank()) {
+                if (button == MouseButton.SECONDARY) {
+                    String selectedText = selectedTranscriptText();
+                    long selectedWordCount = lexicalWordCount(selectedText);
+                    if (selectedWordCount == 1) {
+                        event.consume();
+                        showAnalyseMenu(selectedText, event.getX(), event.getY());
+                        return;
+                    }
+                    if (selectedWordCount > 1) {
+                        event.consume();
+                        showTranslateMenu(selectedText, event.getX(), event.getY());
+                        return;
+                    }
+                }
                 if (activeLinkMenu != null && activeLinkMenu.isShowing()) {
                     activeLinkMenu.hide();
                 }
@@ -233,6 +324,328 @@ public final class MainWindow {
                 event.consume();
             }
         });
+    }
+
+    private String selectedTranscriptText() {
+        Object result = transcriptView.getEngine().executeScript(
+                "window.getSelection ? window.getSelection().toString() : ''"
+        );
+        return result instanceof String value ? value.trim() : "";
+    }
+
+    private String transcriptPlainText() {
+        Object result = transcriptView.getEngine().executeScript(
+                "document && document.body ? document.body.innerText : ''"
+        );
+        if (!(result instanceof String value)) {
+            return "";
+        }
+        String normalized = value.replace('\u00A0', ' ').trim();
+        if (normalized.length() <= 8000) {
+            return normalized;
+        }
+        return normalized.substring(0, 8000);
+    }
+
+        private String selectedSentenceContext(String selectedText) {
+            if (selectedText == null || selectedText.isBlank()) {
+                return "";
+            }
+
+            Object result = transcriptView.getEngine().executeScript("""
+                            (() => {
+                                const sel = window.getSelection ? window.getSelection() : null;
+                                if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return '';
+                                const range = sel.getRangeAt(0);
+
+                                const body = document && document.body ? document.body : null;
+                                if (!body) return '';
+                                const bodyText = body.innerText || '';
+                                if (!bodyText) return '';
+
+                                const preRange = document.createRange();
+                                preRange.selectNodeContents(body);
+                                preRange.setEnd(range.startContainer, range.startOffset);
+
+                                const startIndex = preRange.toString().length;
+                                const selectedText = range.toString();
+                                if (!selectedText || !selectedText.trim()) return '';
+
+                                const boundary = (ch) => ch === '.' || ch === '!' || ch === '?' || ch === '\n';
+
+                                let s = startIndex;
+                                while (s > 0 && !boundary(bodyText[s - 1])) {
+                                    s--;
+                                }
+
+                                let e = startIndex + selectedText.length;
+                                if (e < 0) e = 0;
+                                if (e > bodyText.length) e = bodyText.length;
+                                while (e < bodyText.length && !boundary(bodyText[e])) {
+                                    e++;
+                                }
+                                if (e < bodyText.length) {
+                                    e++;
+                                }
+
+                                return bodyText.substring(s, Math.min(e, bodyText.length)).replace(/\s+/g, ' ').trim();
+                            })();
+                            """);
+
+            return result instanceof String value ? value.trim() : "";
+        }
+
+    private void showAnalyseMenu(String selectedText, double x, double y) {
+        if (selectedText == null || selectedText.isBlank()) {
+            return;
+        }
+
+        if (activeLinkMenu != null) {
+            activeLinkMenu.hide();
+        }
+
+        MenuItem analyse = new MenuItem("Analyse");
+        analyse.setOnAction(event -> Platform.runLater(() -> beginGrammarAnalysis(selectedText)));
+
+        ContextMenu menu = new ContextMenu(analyse);
+        menu.setAutoHide(true);
+        activeLinkMenu = menu;
+
+        Point2D p = transcriptView.localToScreen(x, y);
+        if (p != null) {
+            menu.show(transcriptView, p.getX(), p.getY());
+        } else {
+            menu.show(transcriptView, stage.getX() + stage.getWidth() / 2.0, stage.getY() + stage.getHeight() / 2.0);
+        }
+    }
+
+    private void showTranslateMenu(String selectedText, double x, double y) {
+        if (selectedText == null || selectedText.isBlank()) {
+            return;
+        }
+
+        if (activeLinkMenu != null) {
+            activeLinkMenu.hide();
+        }
+
+        MenuItem translate = new MenuItem("translate");
+        translate.setOnAction(event -> Platform.runLater(() -> beginSelectionTranslation(selectedText)));
+
+        ContextMenu menu = new ContextMenu(translate);
+        menu.setAutoHide(true);
+        activeLinkMenu = menu;
+
+        Point2D p = transcriptView.localToScreen(x, y);
+        if (p != null) {
+            menu.show(transcriptView, p.getX(), p.getY());
+        } else {
+            menu.show(transcriptView, stage.getX() + stage.getWidth() / 2.0, stage.getY() + stage.getHeight() / 2.0);
+        }
+    }
+
+    private void beginSelectionTranslation(String selectedText) {
+        String cleanedSelection = selectedText == null ? "" : selectedText.trim();
+        if (lexicalWordCount(cleanedSelection) <= 1) {
+            info("Multi-word selection required", "Select more than one word to use translate.");
+            return;
+        }
+
+        String key = resolvedKey();
+        if (key == null || key.isBlank()) {
+            error("Missing OPENAI_KEY", "Set the key in environment or File -> Set OpenAI Key.");
+            return;
+        }
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("translate");
+        dialog.setHeaderText("Selected text translation");
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        Label latinLabel = new Label("Selected text");
+        TextArea latinArea = new TextArea(cleanedSelection);
+        latinArea.setEditable(false);
+        latinArea.setWrapText(true);
+        latinArea.setPrefRowCount(8);
+        latinArea.setPrefHeight(240);
+        latinArea.setMaxHeight(Double.MAX_VALUE);
+
+        Label englishLabel = new Label("English translation");
+        TextArea englishArea = new TextArea("Translating...");
+        englishArea.setEditable(false);
+        englishArea.setWrapText(true);
+        englishArea.setPrefRowCount(8);
+        englishArea.setPrefHeight(240);
+        englishArea.setMaxHeight(Double.MAX_VALUE);
+
+        GridPane sideBySide = new GridPane();
+        sideBySide.setHgap(12);
+        sideBySide.setVgap(6);
+
+        ColumnConstraints leftColumn = new ColumnConstraints();
+        leftColumn.setPercentWidth(50);
+        leftColumn.setHgrow(Priority.ALWAYS);
+        ColumnConstraints rightColumn = new ColumnConstraints();
+        rightColumn.setPercentWidth(50);
+        rightColumn.setHgrow(Priority.ALWAYS);
+        sideBySide.getColumnConstraints().addAll(leftColumn, rightColumn);
+
+        GridPane.setHgrow(latinArea, Priority.ALWAYS);
+        GridPane.setVgrow(latinArea, Priority.ALWAYS);
+        GridPane.setHgrow(englishArea, Priority.ALWAYS);
+        GridPane.setVgrow(englishArea, Priority.ALWAYS);
+
+        sideBySide.add(latinLabel, 0, 0);
+        sideBySide.add(englishLabel, 1, 0);
+        sideBySide.add(latinArea, 0, 1);
+        sideBySide.add(englishArea, 1, 1);
+
+        dialog.getDialogPane().setContent(sideBySide);
+        dialog.getDialogPane().setPrefWidth(820);
+
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return grammarAgentGraph.translateSelection(key, cleanedSelection);
+            } catch (Exception ex) {
+                return "Translation failed: " + ex.getMessage();
+            }
+        }).thenAccept(translation -> Platform.runLater(() -> englishArea.setText(translation == null ? "" : translation.trim())));
+
+        dialog.showAndWait();
+    }
+
+    private void beginGrammarAnalysis(String selectedText) {
+        try {
+            String cleanedSelection = selectedText == null ? "" : selectedText.trim();
+            if (cleanedSelection.isBlank()) {
+                return;
+            }
+
+            if (!isSingleLexicalWord(cleanedSelection)) {
+                info("Single-word only", "Select exactly one Latin word before using Analyse.");
+                return;
+            }
+
+            String key = resolvedKey();
+            if (key == null || key.isBlank()) {
+                error("Missing OPENAI_KEY", "Set the key in environment or File -> Set OpenAI Key.");
+                return;
+            }
+
+            String transcriptContext;
+            try {
+                transcriptContext = transcriptPlainText();
+            } catch (Exception ex) {
+                transcriptContext = "";
+            }
+
+            String sentenceContext;
+            try {
+                sentenceContext = selectedSentenceContext(cleanedSelection);
+            } catch (Exception ex) {
+                sentenceContext = "";
+            }
+
+            if (looksIncompleteSentenceContext(sentenceContext, cleanedSelection)) {
+                sentenceContext = fallbackSentenceFromTranscript(cleanedSelection, transcriptContext);
+            }
+
+            String analysisContext;
+            if (!sentenceContext.isBlank() && !transcriptContext.isBlank()) {
+                analysisContext = "Sentence containing selected word:\n" + sentenceContext + "\n\nTranscript excerpt:\n" + transcriptContext;
+            } else if (!sentenceContext.isBlank()) {
+                analysisContext = "Sentence containing selected word:\n" + sentenceContext;
+            } else if (!transcriptContext.isBlank()) {
+                analysisContext = transcriptContext;
+            } else {
+                analysisContext = cleanedSelection;
+            }
+
+            GrammarAnalysisDialog dialog = new GrammarAnalysisDialog(stage, cleanedSelection);
+            dialog.showLoading();
+
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return grammarAgentGraph.run(key, cleanedSelection, analysisContext, true);
+                } catch (Exception ex) {
+                    return GrammarAnalysisResult.error("Analysis failed: " + ex.getMessage());
+                }
+            }).thenAccept(result -> Platform.runLater(() -> dialog.showResult(result)));
+
+            dialog.show();
+        } catch (Exception ex) {
+            error("Analyse failed", "Could not start analysis: " + ex.getMessage());
+        }
+    }
+
+    private static boolean isSingleLexicalWord(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return lexicalWordCount(text) == 1;
+    }
+
+    private static long lexicalWordCount(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        return WORD_PATTERN.matcher(text.trim()).results().count();
+    }
+
+    private static boolean looksIncompleteSentenceContext(String sentence, String selectedWord) {
+        String value = sentence == null ? "" : sentence.trim();
+        if (value.isBlank()) {
+            return true;
+        }
+        if (selectedWord != null && value.equalsIgnoreCase(selectedWord.trim())) {
+            return true;
+        }
+        return WORD_PATTERN.matcher(value).results().count() < 4;
+    }
+
+    private static String fallbackSentenceFromTranscript(String selectedWord, String transcript) {
+        String word = selectedWord == null ? "" : selectedWord.trim();
+        String text = transcript == null ? "" : transcript.replace('\u00A0', ' ').trim();
+        if (word.isBlank() || text.isBlank()) {
+            return "";
+        }
+
+        for (String candidate : SENTENCE_BOUNDARY.split(text)) {
+            String normalized = candidate == null ? "" : candidate.trim();
+            if (normalized.isBlank()) {
+                continue;
+            }
+            Pattern containsWord = Pattern.compile("(?iu)\\b" + Pattern.quote(word) + "\\b");
+            if (containsWord.matcher(normalized).find()) {
+                return normalized;
+            }
+        }
+
+        String lower = text.toLowerCase();
+        int idx = lower.indexOf(word.toLowerCase());
+        if (idx < 0) {
+            return "";
+        }
+
+        int start = idx;
+        while (start > 0) {
+            char ch = text.charAt(start - 1);
+            if (ch == '.' || ch == '!' || ch == '?' || ch == '\n') {
+                break;
+            }
+            start--;
+        }
+
+        int end = idx + word.length();
+        while (end < text.length()) {
+            char ch = text.charAt(end);
+            if (ch == '.' || ch == '!' || ch == '?' || ch == '\n') {
+                end++;
+                break;
+            }
+            end++;
+        }
+
+        return text.substring(Math.max(0, start), Math.min(end, text.length())).replaceAll("\\s+", " ").trim();
     }
 
     private String hrefAtPoint(double x, double y) {
@@ -289,7 +702,7 @@ public final class MainWindow {
             }
             String html = markdownRenderer.renderHtml(markdown.toString());
             if (showThinkingIndicator) {
-                html = html + thinkingIndicatorHtml();
+                html = html + thinkingIndicatorHtml(selected.includeWebSearch());
             }
             if (scrollToLatestAssistant) {
                 scrollToLatestAssistantOnLoad();
@@ -347,15 +760,43 @@ public final class MainWindow {
     }
 
     private void createConversation() {
-        TextInputDialog dialog = new TextInputDialog("New Chat");
-        dialog.setHeaderText("Conversation title");
-        Optional<String> result = dialog.showAndWait();
-        if (result.isEmpty() || result.get().isBlank()) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("New Chat");
+        dialog.setHeaderText("Conversation options");
+
+        ButtonType createButton = new ButtonType("Create", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(createButton, ButtonType.CANCEL);
+
+        TextField titleField = new TextField("New Chat");
+        titleField.setPromptText("Conversation title");
+        titleField.setPrefWidth(340);
+
+        CheckBox includeWebSearchBox = new CheckBox("Include web search");
+        includeWebSearchBox.setSelected(false);
+
+        Label titleLabel = new Label("Conversation title");
+        VBox content = new VBox(12,
+            titleLabel,
+            titleField,
+            includeWebSearchBox);
+        content.setPadding(new Insets(12, 4, 4, 4));
+
+        dialog.getDialogPane().setMinWidth(440);
+        dialog.getDialogPane().setPrefWidth(440);
+        dialog.getDialogPane().setContent(content);
+
+        Optional<ButtonType> result = dialog.showAndWait();
+        if (result.isEmpty() || result.get() != createButton) {
+            return;
+        }
+
+        String title = titleField.getText() == null ? "" : titleField.getText().trim();
+        if (title.isBlank()) {
             return;
         }
 
         try {
-            long id = chatService.createConversation(result.get().trim());
+            long id = chatService.createConversation(title, includeWebSearchBox.isSelected());
             refreshConversations();
             selectConversation(id);
         } catch (SQLException ex) {
@@ -418,7 +859,7 @@ public final class MainWindow {
 
         CompletableFuture.supplyAsync(() -> {
             try {
-                return agentGraph.run(key, message, context);
+                return agentGraph.run(key, message, context, selected.includeWebSearch());
             } catch (Exception ex) {
                 return "I encountered an error: " + ex.getMessage();
             }
@@ -520,7 +961,7 @@ public final class MainWindow {
 
     private String baseHtml(String body) {
         return """
-                <html><head><style>
+                <html><head><meta charset=\"UTF-8\"><style>
                 body { font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; color: #212529; padding: 18px; background: #ffffff; }
                 h1,h2,h3 { margin-top: 1.2em; }
                 pre { background: #f1f4f9; border: 1px solid #d6dee8; border-radius: 8px; padding: 10px; overflow-x: auto; }
@@ -558,13 +999,15 @@ public final class MainWindow {
                 """ + body + "</body></html>";
     }
 
-        private String thinkingIndicatorHtml() {
+        private String thinkingIndicatorHtml(boolean includeWebSearch) {
+                String status = includeWebSearch ? "Searching the web and thinking" : "Thinking";
                 return """
                                 <div class="thinking">
                                     <span class="thinking-label">SPQR</span>
+                                    <span>%s</span>
                                     <span class="thinking-dots"><span></span><span></span><span></span></span>
                                 </div>
-                                """;
+                                """.formatted(status);
         }
 
                     private void showCopyToast(String text) {

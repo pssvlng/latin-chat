@@ -19,7 +19,11 @@ public final class ChatService {
     }
 
     public long createConversation(String title) throws SQLException {
-        return repository.createConversation(title);
+        return createConversation(title, false);
+    }
+
+    public long createConversation(String title, boolean includeWebSearch) throws SQLException {
+        return repository.createConversation(title, includeWebSearch);
     }
 
     public void deleteConversation(long conversationId) throws SQLException {

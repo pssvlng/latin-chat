@@ -40,10 +40,15 @@ public final class LatinAgentGraph {
     }
 
     public String run(String apiKey, String userText, String conversationContext) throws Exception {
+        return run(apiKey, userText, conversationContext, false);
+    }
+
+    public String run(String apiKey, String userText, String conversationContext, boolean includeWebSearch) throws Exception {
         Map<String, Object> input = new HashMap<>();
         input.put(AgentState.API_KEY, safe(apiKey));
         input.put(AgentState.USER_TEXT, safe(userText));
         input.put(AgentState.CONTEXT_MARKDOWN, safe(conversationContext));
+        input.put(AgentState.INCLUDE_WEB_SEARCH, includeWebSearch);
         input.put(AgentState.MODEL_OUTPUT, "");
         input.put(AgentState.LATIN_VALID, false);
 
@@ -61,7 +66,9 @@ public final class LatinAgentGraph {
             StateGraph<AgentState> stateGraph = new StateGraph<>(AgentState::new)
                     .addNode("first_pass", node_async(state -> {
                         String prompt = "Contextus conversationis:\n" + state.contextMarkdown() + "\n\nNuntius usoris:\n" + state.userText();
-                        String output = client.complete(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt);
+                        String output = state.includeWebSearch()
+                                ? client.completeWithWebSearch(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt, state.userText())
+                                : client.complete(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt);
                         return Map.of(AgentState.MODEL_OUTPUT, output);
                     }))
                     .addNode("validate_first", node_async(state ->
@@ -69,7 +76,9 @@ public final class LatinAgentGraph {
                     ))
                     .addNode("retry_pass", node_async(state -> {
                         String prompt = LATIN_RETRY_PROMPT + "\n\nNuntius usoris:\n" + state.userText();
-                        String output = client.complete(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt);
+                        String output = state.includeWebSearch()
+                                ? client.completeWithWebSearch(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt, state.userText())
+                                : client.complete(state.apiKey(), LATIN_SYSTEM_PROMPT, prompt);
                         return Map.of(AgentState.MODEL_OUTPUT, output);
                     }))
                     .addNode("validate_retry", node_async(state ->

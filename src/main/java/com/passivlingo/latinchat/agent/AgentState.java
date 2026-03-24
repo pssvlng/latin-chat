@@ -6,6 +6,7 @@ public final class AgentState extends org.bsc.langgraph4j.state.AgentState {
     public static final String API_KEY = "apiKey";
     public static final String USER_TEXT = "userText";
     public static final String CONTEXT_MARKDOWN = "contextMarkdown";
+    public static final String INCLUDE_WEB_SEARCH = "includeWebSearch";
     public static final String MODEL_OUTPUT = "modelOutput";
     public static final String LATIN_VALID = "latinValid";
 
@@ -23,6 +24,10 @@ public final class AgentState extends org.bsc.langgraph4j.state.AgentState {
 
     public String contextMarkdown() {
         return value(CONTEXT_MARKDOWN, "");
+    }
+
+    public boolean includeWebSearch() {
+        return value(INCLUDE_WEB_SEARCH, Boolean.FALSE);
     }
 
     public String modelOutput() {

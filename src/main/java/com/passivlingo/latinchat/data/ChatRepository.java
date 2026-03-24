@@ -21,7 +21,7 @@ public final class ChatRepository {
     public synchronized List<Conversation> listConversations() throws SQLException {
         List<Conversation> items = new ArrayList<>();
         try (PreparedStatement ps = db.connection().prepareStatement("""
-                SELECT id, title, created_at, updated_at
+            SELECT id, title, include_web_search, created_at, updated_at
                 FROM conversations
                 ORDER BY updated_at DESC
                 """)) {
@@ -31,22 +31,24 @@ public final class ChatRepository {
                             rs.getLong("id"),
                             rs.getString("title"),
                             Instant.parse(rs.getString("created_at")),
-                            Instant.parse(rs.getString("updated_at"))));
+                            Instant.parse(rs.getString("updated_at")),
+                            rs.getInt("include_web_search") == 1));
                 }
             }
         }
         return items;
     }
 
-    public synchronized long createConversation(String title) throws SQLException {
+    public synchronized long createConversation(String title, boolean includeWebSearch) throws SQLException {
         Instant now = Instant.now();
         try (PreparedStatement ps = db.connection().prepareStatement("""
-                INSERT INTO conversations(title, created_at, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO conversations(title, include_web_search, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
                 """, PreparedStatement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, title);
-            ps.setString(2, now.toString());
+            ps.setInt(2, includeWebSearch ? 1 : 0);
             ps.setString(3, now.toString());
+            ps.setString(4, now.toString());
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 if (rs.next()) {
