@@ -11,6 +11,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
+set "JAVA_CMD=javaw"
+where %JAVA_CMD% >nul 2>nul
+if errorlevel 1 set "JAVA_CMD=java"
+
 if not exist "%JAR_PATH%" (
   echo Jar not found: %JAR_PATH%
   echo Run: mvn -DskipTests clean package
@@ -23,4 +27,6 @@ if not exist "%LIB_DIR%" (
   exit /b 1
 )
 
-java -cp "%JAR_PATH%;%LIB_DIR%\*" com.passivlingo.latinchat.AppLauncher
+if "%JAVA_OPTS%"=="" set "JAVA_OPTS=-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxRAMPercentage=60 -XX:InitiatingHeapOccupancyPercent=30"
+
+%JAVA_CMD% %JAVA_OPTS% -cp "%JAR_PATH%;%LIB_DIR%\*" com.passivlingo.latinchat.AppLauncher

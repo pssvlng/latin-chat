@@ -66,6 +66,12 @@ public final class ChatRepository {
         }
     }
 
+    public synchronized void deleteAllConversations() throws SQLException {
+        try (PreparedStatement ps = db.connection().prepareStatement("DELETE FROM conversations")) {
+            ps.executeUpdate();
+        }
+    }
+
     public synchronized List<Message> listMessages(long conversationId) throws SQLException {
         List<Message> items = new ArrayList<>();
         try (PreparedStatement ps = db.connection().prepareStatement("""

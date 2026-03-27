@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 public final class GrammarAnalysisDialog {
+    private static final int MAX_RENDERED_SENTENCE_CONTEXT_WORDS = 70;
     private static final Pattern WORD_PATTERN = Pattern.compile("\\p{L}[\\p{L}\\p{M}\\-]*");
 
     private final Stage stage;
@@ -29,7 +30,7 @@ public final class GrammarAnalysisDialog {
         this.stage = new Stage();
         this.stage.initOwner(owner);
         this.stage.initModality(Modality.APPLICATION_MODAL);
-        this.stage.setTitle("Analyse");
+        this.stage.setTitle("Analyze");
 
         titleLabel.setStyle("-fx-font-size: 15px; -fx-font-weight: 700;");
 
@@ -45,16 +46,18 @@ public final class GrammarAnalysisDialog {
         bottom.setAlignment(Pos.CENTER_RIGHT);
 
         BorderPane root = new BorderPane();
+        root.getStyleClass().add("root");
         root.setTop(top);
         root.setCenter(contentView);
         root.setBottom(bottom);
 
         Scene scene = new Scene(root, 980, 760);
+        scene.getStylesheets().add(ChatTheme.stylesheetUri());
         stage.setScene(scene);
     }
 
     public void showLoading() {
-        contentView.getEngine().loadContent(baseHtml("<p class='muted'>Analysing selected text...</p>"));
+        contentView.getEngine().loadContent(baseHtml("<p class='muted'>Analyzing selected text...</p>"));
     }
 
     public void showResult(GrammarAnalysisResult result) {
@@ -73,19 +76,25 @@ public final class GrammarAnalysisDialog {
         html.append("<p>").append(escape(selectedText)).append("</p>");
         html.append("</section>");
 
-        html.append("<section>");
-        html.append("<h2>Sentence Context</h2>");
-        for (GrammarAnalysisResult.SentencePair pair : normalized.sentencePairs()) {
-            html.append("<div class='sentence-grid'>");
-            html.append("<div><h3>Latin</h3><p>")
-                .append(escape(pair.latin()))
-                    .append("</p></div>");
-            html.append("<div><h3>English</h3><p>")
-                    .append(escape(pair.english()))
-                    .append("</p></div>");
-            html.append("</div>");
+        List<GrammarAnalysisResult.SentencePair> renderableSentencePairs = normalized.sentencePairs().stream()
+                .filter(pair -> wordCount(pair.latin()) <= MAX_RENDERED_SENTENCE_CONTEXT_WORDS)
+                .toList();
+
+        if (!renderableSentencePairs.isEmpty()) {
+            html.append("<section>");
+            html.append("<h2>Sentence Context</h2>");
+            for (GrammarAnalysisResult.SentencePair pair : renderableSentencePairs) {
+                html.append("<div class='sentence-grid'>");
+                html.append("<div><h3>Latin</h3><p>")
+                    .append(escape(pair.latin()))
+                        .append("</p></div>");
+                html.append("<div><h3>English</h3><p>")
+                        .append(escape(pair.english()))
+                        .append("</p></div>");
+                html.append("</div>");
+            }
+            html.append("</section>");
         }
-        html.append("</section>");
 
         html.append("<section>");
         html.append("<h2>Word Analysis</h2>");
@@ -220,6 +229,13 @@ public final class GrammarAnalysisDialog {
         return count == 1;
     }
 
+    private static long wordCount(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        return WORD_PATTERN.matcher(text.trim()).results().count();
+    }
+
     private static String escape(String value) {
         if (value == null) {
             return "";
@@ -236,23 +252,23 @@ public final class GrammarAnalysisDialog {
                 <html>
                 <head>
                   <style>
-                    body { font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; color: #1f2937; margin: 0; padding: 14px; background: #f8fafc; }
-                    h2 { margin: 8px 0 8px; color: #7f1d1d; font-size: 18px; }
-                    h3 { margin: 0 0 6px; color: #111827; }
+                                        body { font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; color: #dbe4f0; margin: 0; padding: 14px; background: #0b1326; }
+                                        h2 { margin: 8px 0 8px; color: #93c5fd; font-size: 18px; }
+                                        h3 { margin: 0 0 6px; color: #eef4ff; }
                     h4 { margin: 10px 0 8px; }
                     p { margin: 4px 0 8px; }
-                    .muted { color: #6b7280; }
-                    .error { color: #991b1b; font-weight: 600; }
+                                        .muted { color: #9caec8; }
+                                        .error { color: #fca5a5; font-weight: 600; }
                     section { margin-bottom: 16px; }
                     .sentence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-                    .sentence-grid > div { background: #ffffff; border: 1px solid #dbe2ea; border-radius: 8px; padding: 10px; }
-                    .word-card { background: #ffffff; border: 1px solid #dbe2ea; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-                    .template { color: #334155; }
-                    mark { background: #fde68a; padding: 0 2px; border-radius: 2px; }
+                                        .sentence-grid > div { background: #111c34; border: 1px solid #2b3a54; border-radius: 8px; padding: 10px; }
+                                        .word-card { background: #111c34; border: 1px solid #2b3a54; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+                                        .template { color: #b9c8dd; }
+                                        mark { background: #facc15; color: #111827; padding: 0 2px; border-radius: 2px; }
                     ul { margin: 6px 0 8px 22px; }
-                    table { border-collapse: collapse; width: 100%; background: #fff; }
-                    th, td { border: 1px solid #dbe2ea; padding: 6px 8px; text-align: left; vertical-align: top; }
-                    th { background: #f1f5f9; }
+                                        table { border-collapse: collapse; width: 100%; background: #0f172a; }
+                                        th, td { border: 1px solid #2b3a54; padding: 6px 8px; text-align: left; vertical-align: top; }
+                                        th { background: #1a2740; }
                     .table-wrap { margin-top: 10px; }
                   </style>
                 </head>

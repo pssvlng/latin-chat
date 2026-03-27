@@ -9,6 +9,7 @@ import com.passivlingo.latinchat.data.ChatRepository;
 import com.passivlingo.latinchat.data.ChatService;
 import com.passivlingo.latinchat.data.DatabaseManager;
 import com.passivlingo.latinchat.ui.AppIconFactory;
+import com.passivlingo.latinchat.ui.ChatTheme;
 import com.passivlingo.latinchat.ui.MainWindow;
 import com.passivlingo.latinchat.util.MarkdownRenderer;
 import javafx.application.Application;
@@ -20,11 +21,14 @@ import javafx.scene.control.TextArea;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import com.sun.jna.WString;
+import com.sun.jna.platform.win32.Shell32;
 
 import java.awt.Taskbar;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MainApp extends Application {
@@ -68,8 +72,22 @@ public final class MainApp extends Application {
     }
 
     public static void main(String[] args) {
+        configureWindowsAppIdentity();
         installGlobalExceptionHandler();
         launch(args);
+    }
+
+    private static void configureWindowsAppIdentity() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (!osName.contains("win")) {
+            return;
+        }
+
+        try {
+            Shell32.INSTANCE.SetCurrentProcessExplicitAppUserModelID(new WString("com.passivlingo.latinchat"));
+        } catch (Throwable ignored) {
+            // Keep startup resilient even if Windows shell APIs are unavailable.
+        }
     }
 
     private static void installGlobalExceptionHandler() {
@@ -81,8 +99,10 @@ public final class MainApp extends Application {
             Runnable showCrashDialog = () -> {
                 try {
                     Alert alert = new Alert(Alert.AlertType.ERROR, "The application encountered an unrecoverable error and must close.", ButtonType.OK);
-                    alert.setHeaderText("Unexpected crash");
+                    alert.setHeaderText("Unexpected Crash");
                     alert.setTitle("SPQR Latin Chat");
+                    alert.getDialogPane().getStylesheets().add(ChatTheme.stylesheetUri());
+                    alert.getDialogPane().getStyleClass().add("app-dialog");
 
                     String threadName = thread == null ? "unknown" : thread.getName();
                     String rootMessage = throwable.getMessage();

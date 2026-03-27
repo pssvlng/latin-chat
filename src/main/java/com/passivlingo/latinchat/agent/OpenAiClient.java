@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 public final class OpenAiClient {
     private static final URI RESPONSES_URI = URI.create("https://api.openai.com/v1/responses");
     private static final Logger LOG = Logger.getLogger(OpenAiClient.class.getName());
+    private static final String DEFAULT_MODEL = "gpt-5.4-mini";
     private static final String WEB_SEARCH_BADGE = "\n\n---\n[Web] _Web search used for this reply._";
     private static final Pattern FRESHNESS_PATTERN = Pattern.compile(
             "\\b(recent|latest|current|today|yesterday|this week|this month|now|breaking|news|conference|event|events|nuntios|recens|recentes|hodie|hesterno|nunc|conventus|res gestae)\\b",
@@ -50,10 +51,7 @@ public final class OpenAiClient {
 
     public String completeWithWebSearch(String apiKey, String systemPrompt, String userPrompt, String userText) {
         try {
-            String model = System.getenv("OPENAI_RESPONSES_MODEL");
-            if (model == null || model.isBlank()) {
-                model = "gpt-5.4-mini";
-            }
+            String model = resolvedModelName();
 
             boolean freshnessRequested = needsFreshSearch(userText);
             LOG.info("Web-search chat request. freshnessRequested=" + freshnessRequested);
@@ -136,11 +134,28 @@ public final class OpenAiClient {
     }
 
     private OpenAiChatModel modelFor(String apiKey) {
-        return modelCache.computeIfAbsent(apiKey, key -> OpenAiChatModel.builder()
-                .apiKey(key)
-                .modelName("gpt-5.4-mini")
+        String modelName = resolvedModelName();
+        String cacheKey = apiKey + "::" + modelName;
+        if (modelCache.size() > 6 && !modelCache.containsKey(cacheKey)) {
+            modelCache.clear();
+        }
+        return modelCache.computeIfAbsent(cacheKey, ignored -> OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .modelName(modelName)
                 .temperature(0.3)
                 .build());
+    }
+
+    private String resolvedModelName() {
+        String model = System.getenv("OPENAI_MODEL");
+        if (model != null && !model.isBlank()) {
+            return model.trim();
+        }
+        String runtimeModel = System.getProperty("OPENAI_MODEL");
+        if (runtimeModel != null && !runtimeModel.isBlank()) {
+            return runtimeModel.trim();
+        }
+        return DEFAULT_MODEL;
     }
 
     private String extractOutputText(JsonNode root) {

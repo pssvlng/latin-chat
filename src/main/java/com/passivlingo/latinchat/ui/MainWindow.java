@@ -41,6 +41,8 @@ import javafx.util.Duration;
 
 import java.sql.SQLException;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -51,8 +53,13 @@ import java.util.regex.Pattern;
 
 public final class MainWindow {
     private static final int CONTEXT_MESSAGE_LIMIT = 24;
+    private static final int RENDER_MESSAGE_LIMIT = 120;
+    private static final int MAX_SENTENCE_CONTEXT_WORDS = 70;
+    private static final String DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
+    private static final DateTimeFormatter CHAT_TITLE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss");
     private static final Pattern WORD_PATTERN = Pattern.compile("\\p{L}[\\p{L}\\p{M}\\-]*");
     private static final Pattern SENTENCE_BOUNDARY = Pattern.compile("(?<=[.!?])\\s+");
+    private static final String THEME_STYLESHEET = ChatTheme.stylesheetUri();
 
     private final Stage stage;
     private final ChatService chatService;
@@ -75,6 +82,9 @@ public final class MainWindow {
     private Long activeConversationId;
 
     private String runtimeApiKey;
+    private String runtimeModelName;
+    private boolean ignoreEnvironmentKey;
+    private boolean ignoreEnvironmentModel;
 
     public MainWindow(Stage stage,
                       ChatService chatService,
@@ -91,6 +101,10 @@ public final class MainWindow {
         this.keyStore = keyStore;
         this.markdownRenderer = markdownRenderer;
         this.runtimeApiKey = initialApiKey;
+        this.runtimeModelName = resolveCurrentModelName();
+        this.ignoreEnvironmentKey = false;
+        this.ignoreEnvironmentModel = false;
+        System.setProperty("OPENAI_MODEL", this.runtimeModelName);
         this.hostServices = hostServices;
     }
 
@@ -120,10 +134,11 @@ public final class MainWindow {
         StackPane.setMargin(copyToast, new Insets(0, 0, 18, 0));
 
         Scene scene = new Scene(rootStack, 1400, 900);
-        scene.getStylesheets().add("data:text/css," + ChatTheme.APP_CSS.replace("\n", "%0A").replace(" ", "%20"));
+        scene.getStylesheets().add(THEME_STYLESHEET);
 
         stage.setScene(scene);
         stage.setTitle("SPQR Latin Chat");
+        stage.setOnCloseRequest(e -> disposeAllWebTabs());
         stage.show();
 
         copyToastTimer.setOnFinished(e -> copyToast.setVisible(false));
@@ -136,10 +151,10 @@ public final class MainWindow {
         Menu fileMenu = new Menu("File");
         Menu helpMenu = new Menu("Help");
 
-        MenuItem setKey = new MenuItem("Set OpenAI Key");
+        MenuItem setKey = new MenuItem("Set OpenAI Key and Model");
         MenuItem clearKey = new MenuItem("Clear OpenAI Key");
         MenuItem exit = new MenuItem("Exit");
-        MenuItem databaseLocation = new MenuItem("Database location");
+        MenuItem databaseLocation = new MenuItem("Database Location");
         MenuItem about = new MenuItem("About");
 
         setKey.setOnAction(e -> setOpenAiKey());
@@ -156,8 +171,9 @@ public final class MainWindow {
     private void showDatabaseLocation() {
         Path dbPath = AppPaths.appHome().resolve("latin_chat.db").toAbsolutePath();
         Alert alert = new Alert(Alert.AlertType.INFORMATION, dbPath.toString(), ButtonType.OK);
-        alert.setTitle("Database location");
-        alert.setHeaderText("SQLite database file");
+        alert.setTitle("Database Location");
+        alert.setHeaderText("SQLite Database File");
+        applyDialogTheme(alert);
         alert.showAndWait();
     }
 
@@ -180,10 +196,11 @@ public final class MainWindow {
                 "All images and design elements were created manually or with AI assistance."
         );
         designNote.setWrapText(true);
-        designNote.setStyle("-fx-text-fill: #475569;");
+        designNote.setStyle("-fx-text-fill: #9caec8;");
 
         VBox content = new VBox(10, description, designNote);
         alert.getDialogPane().setContent(content);
+        applyDialogTheme(alert);
         alert.showAndWait();
     }
 
@@ -191,12 +208,17 @@ public final class MainWindow {
         Label title = new Label("Conversations");
         Button newChat = new Button("+ New Chat");
         Button deleteChat = new Button("Delete");
+        Button deleteAllChats = new Button("Delete All");
 
         newChat.setMaxWidth(Double.MAX_VALUE);
         deleteChat.setMaxWidth(Double.MAX_VALUE);
+        deleteAllChats.setMaxWidth(Double.MAX_VALUE);
 
         newChat.setOnAction(e -> createConversation());
         deleteChat.setOnAction(e -> deleteSelectedConversation());
+        deleteAllChats.setOnAction(e -> deleteAllConversations());
+
+        conversationsList.getStyleClass().add("conversation-list");
 
         conversationsList.setCellFactory(list -> new ListCell<>() {
             @Override
@@ -231,7 +253,7 @@ public final class MainWindow {
             }
         });
 
-        VBox box = new VBox(10, title, newChat, deleteChat, new Separator(Orientation.HORIZONTAL), conversationsList);
+        VBox box = new VBox(10, title, newChat, deleteChat, deleteAllChats, new Separator(Orientation.HORIZONTAL), conversationsList);
         box.setPadding(new Insets(12));
         box.setPrefWidth(280);
         box.getStyleClass().add("sidebar");
@@ -299,7 +321,7 @@ public final class MainWindow {
                     long selectedWordCount = lexicalWordCount(selectedText);
                     if (selectedWordCount == 1) {
                         event.consume();
-                        showAnalyseMenu(selectedText, event.getX(), event.getY());
+                        showAnalyzeMenu(selectedText, event.getX(), event.getY());
                         return;
                     }
                     if (selectedWordCount > 1) {
@@ -395,7 +417,7 @@ public final class MainWindow {
             return result instanceof String value ? value.trim() : "";
         }
 
-    private void showAnalyseMenu(String selectedText, double x, double y) {
+    private void showAnalyzeMenu(String selectedText, double x, double y) {
         if (selectedText == null || selectedText.isBlank()) {
             return;
         }
@@ -404,10 +426,10 @@ public final class MainWindow {
             activeLinkMenu.hide();
         }
 
-        MenuItem analyse = new MenuItem("Analyse");
-        analyse.setOnAction(event -> Platform.runLater(() -> beginGrammarAnalysis(selectedText)));
+        MenuItem analyze = new MenuItem("Analyze");
+        analyze.setOnAction(event -> Platform.runLater(() -> beginGrammarAnalysis(selectedText)));
 
-        ContextMenu menu = new ContextMenu(analyse);
+        ContextMenu menu = new ContextMenu(analyze);
         menu.setAutoHide(true);
         activeLinkMenu = menu;
 
@@ -428,7 +450,7 @@ public final class MainWindow {
             activeLinkMenu.hide();
         }
 
-        MenuItem translate = new MenuItem("translate");
+        MenuItem translate = new MenuItem("Translate");
         translate.setOnAction(event -> Platform.runLater(() -> beginSelectionTranslation(selectedText)));
 
         ContextMenu menu = new ContextMenu(translate);
@@ -446,36 +468,41 @@ public final class MainWindow {
     private void beginSelectionTranslation(String selectedText) {
         String cleanedSelection = selectedText == null ? "" : selectedText.trim();
         if (lexicalWordCount(cleanedSelection) <= 1) {
-            info("Multi-word selection required", "Select more than one word to use translate.");
+            info("Multi-word selection required", "Select more than one word before using Translate.");
             return;
         }
 
-        String key = resolvedKey();
-        if (key == null || key.isBlank()) {
-            error("Missing OPENAI_KEY", "Set the key in environment or File -> Set OpenAI Key.");
+        if (!ensureOpenAiSettingsConfigured()) {
             return;
         }
+        String key = resolvedKey();
 
         Dialog<ButtonType> dialog = new Dialog<>();
-        dialog.setTitle("translate");
-        dialog.setHeaderText("Selected text translation");
+        dialog.setTitle("Translate");
+        dialog.setHeaderText("Selected Text Translation");
         dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
-        Label latinLabel = new Label("Selected text");
+        String analysisPopupFont = "-fx-font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; -fx-font-size: 16px;";
+
+        Label latinLabel = new Label("Selected Text");
+        latinLabel.setStyle(analysisPopupFont);
         TextArea latinArea = new TextArea(cleanedSelection);
         latinArea.setEditable(false);
         latinArea.setWrapText(true);
         latinArea.setPrefRowCount(8);
         latinArea.setPrefHeight(240);
         latinArea.setMaxHeight(Double.MAX_VALUE);
+        latinArea.setStyle(analysisPopupFont);
 
-        Label englishLabel = new Label("English translation");
+        Label englishLabel = new Label("English Translation");
+        englishLabel.setStyle(analysisPopupFont);
         TextArea englishArea = new TextArea("Translating...");
         englishArea.setEditable(false);
         englishArea.setWrapText(true);
         englishArea.setPrefRowCount(8);
         englishArea.setPrefHeight(240);
         englishArea.setMaxHeight(Double.MAX_VALUE);
+        englishArea.setStyle(analysisPopupFont);
 
         GridPane sideBySide = new GridPane();
         sideBySide.setHgap(12);
@@ -501,6 +528,7 @@ public final class MainWindow {
 
         dialog.getDialogPane().setContent(sideBySide);
         dialog.getDialogPane().setPrefWidth(820);
+        applyDialogTheme(dialog);
 
         CompletableFuture.supplyAsync(() -> {
             try {
@@ -521,15 +549,14 @@ public final class MainWindow {
             }
 
             if (!isSingleLexicalWord(cleanedSelection)) {
-                info("Single-word only", "Select exactly one Latin word before using Analyse.");
+                info("Single-word only", "Select exactly one Latin word before using Analyze.");
                 return;
             }
 
-            String key = resolvedKey();
-            if (key == null || key.isBlank()) {
-                error("Missing OPENAI_KEY", "Set the key in environment or File -> Set OpenAI Key.");
+            if (!ensureOpenAiSettingsConfigured()) {
                 return;
             }
+            String key = resolvedKey();
 
             String transcriptContext;
             try {
@@ -544,9 +571,11 @@ public final class MainWindow {
             } catch (Exception ex) {
                 sentenceContext = "";
             }
+            sentenceContext = sanitizeSentenceContext(sentenceContext);
 
             if (looksIncompleteSentenceContext(sentenceContext, cleanedSelection)) {
                 sentenceContext = fallbackSentenceFromTranscript(cleanedSelection, transcriptContext);
+                sentenceContext = sanitizeSentenceContext(sentenceContext);
             }
 
             String analysisContext;
@@ -573,7 +602,7 @@ public final class MainWindow {
 
             dialog.show();
         } catch (Exception ex) {
-            error("Analyse failed", "Could not start analysis: " + ex.getMessage());
+            error("Analysis failed", "Could not start analysis: " + ex.getMessage());
         }
     }
 
@@ -600,6 +629,18 @@ public final class MainWindow {
             return true;
         }
         return WORD_PATTERN.matcher(value).results().count() < 4;
+    }
+
+    private static String sanitizeSentenceContext(String sentence) {
+        String value = sentence == null ? "" : sentence.replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
+        if (value.isBlank()) {
+            return "";
+        }
+        long words = WORD_PATTERN.matcher(value).results().count();
+        if (words > MAX_SENTENCE_CONTEXT_WORDS) {
+            return "";
+        }
+        return value;
     }
 
     private static String fallbackSentenceFromTranscript(String selectedWord, String transcript) {
@@ -693,7 +734,17 @@ public final class MainWindow {
         try {
             List<Message> messages = chatService.listMessages(selected.id());
             StringBuilder markdown = new StringBuilder();
-            for (Message message : messages) {
+            int start = Math.max(0, messages.size() - RENDER_MESSAGE_LIMIT);
+            if (start > 0) {
+                markdown.append("> Showing latest ")
+                        .append(RENDER_MESSAGE_LIMIT)
+                        .append(" messages (")
+                        .append(start)
+                        .append(" older hidden for performance).\\n\\n");
+            }
+
+            for (int i = start; i < messages.size(); i++) {
+                Message message = messages.get(i);
                 if ("user".equals(message.role())) {
                     markdown.append("## You\n\n").append(message.content()).append("\n\n");
                 } else {
@@ -762,19 +813,19 @@ public final class MainWindow {
     private void createConversation() {
         Dialog<ButtonType> dialog = new Dialog<>();
         dialog.setTitle("New Chat");
-        dialog.setHeaderText("Conversation options");
+        dialog.setHeaderText("Conversation Options");
 
         ButtonType createButton = new ButtonType("Create", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(createButton, ButtonType.CANCEL);
 
-        TextField titleField = new TextField("New Chat");
-        titleField.setPromptText("Conversation title");
+        TextField titleField = new TextField(defaultConversationTitle());
+        titleField.setPromptText("Conversation Title");
         titleField.setPrefWidth(340);
 
-        CheckBox includeWebSearchBox = new CheckBox("Include web search");
+        CheckBox includeWebSearchBox = new CheckBox("Include Web Search");
         includeWebSearchBox.setSelected(false);
 
-        Label titleLabel = new Label("Conversation title");
+        Label titleLabel = new Label("Conversation Title");
         VBox content = new VBox(12,
             titleLabel,
             titleField,
@@ -784,6 +835,7 @@ public final class MainWindow {
         dialog.getDialogPane().setMinWidth(440);
         dialog.getDialogPane().setPrefWidth(440);
         dialog.getDialogPane().setContent(content);
+        applyDialogTheme(dialog);
 
         Optional<ButtonType> result = dialog.showAndWait();
         if (result.isEmpty() || result.get() != createButton) {
@@ -814,7 +866,8 @@ public final class MainWindow {
                 "Delete selected conversation?",
                 ButtonType.YES,
                 ButtonType.NO);
-        alert.setHeaderText("Confirm deletion");
+        alert.setHeaderText("Confirm Deletion");
+        applyDialogTheme(alert);
         Optional<ButtonType> result = alert.showAndWait();
         if (result.orElse(ButtonType.NO) != ButtonType.YES) {
             return;
@@ -822,11 +875,38 @@ public final class MainWindow {
 
         try {
             chatService.deleteConversation(selected.id());
-            webTabsByConversation.remove(selected.id());
+            disposeConversationWebTabs(selected.id());
             refreshConversations();
             refreshMessages();
         } catch (SQLException ex) {
             error("Could not delete conversation", ex.getMessage());
+        }
+    }
+
+    private void deleteAllConversations() {
+        if (conversationsList.getItems().isEmpty()) {
+            return;
+        }
+
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION,
+                "Delete all conversations? This cannot be undone.",
+                ButtonType.YES,
+                ButtonType.NO);
+        alert.setHeaderText("Confirm Delete All");
+        applyDialogTheme(alert);
+        Optional<ButtonType> result = alert.showAndWait();
+        if (result.orElse(ButtonType.NO) != ButtonType.YES) {
+            return;
+        }
+
+        try {
+            chatService.deleteAllConversations();
+            disposeAllWebTabs();
+            activeConversationId = null;
+            refreshConversations();
+            refreshMessages();
+        } catch (SQLException ex) {
+            error("Could not delete all conversations", ex.getMessage());
         }
     }
 
@@ -837,11 +917,10 @@ public final class MainWindow {
             return;
         }
 
-        String key = resolvedKey();
-        if (key == null || key.isBlank()) {
-            error("Missing OPENAI_KEY", "Set the key in environment or File -> Set OpenAI Key.");
+        if (!ensureOpenAiSettingsConfigured()) {
             return;
         }
+        String key = resolvedKey();
 
         String context = conversationContext(selected.id());
 
@@ -883,7 +962,7 @@ public final class MainWindow {
         }
 
         try {
-            long id = chatService.createConversation("New Chat");
+            long id = chatService.createConversation(defaultConversationTitle());
             refreshConversations();
             selectConversation(id);
             return conversationsList.getSelectionModel().getSelectedItem();
@@ -891,6 +970,10 @@ public final class MainWindow {
             error("Could not create conversation", ex.getMessage());
             return null;
         }
+    }
+
+    private static String defaultConversationTitle() {
+        return LocalDateTime.now().format(CHAT_TITLE_FORMATTER) + " chat";
     }
 
     private String conversationContext(long conversationId) {
@@ -909,23 +992,60 @@ public final class MainWindow {
     }
 
     private void setOpenAiKey() {
-        TextInputDialog dialog = new TextInputDialog();
-        dialog.setTitle("OpenAI Key");
-        dialog.setHeaderText("Enter OPENAI_KEY");
-        Optional<String> result = dialog.showAndWait();
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("OpenAI Settings");
+        dialog.setHeaderText("Set OPENAI_KEY and OPENAI_MODEL");
 
-        if (result.isEmpty() || result.get().isBlank()) {
+        ButtonType saveButton = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(saveButton, ButtonType.CANCEL);
+
+        TextField keyField = new TextField(resolveCurrentKey());
+        keyField.setPromptText("OPENAI_KEY");
+
+        TextField modelField = new TextField(resolveCurrentModelName());
+        modelField.setPromptText("OPENAI_MODEL");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(6, 2, 2, 2));
+        grid.add(new Label("OPENAI_KEY"), 0, 0);
+        grid.add(keyField, 1, 0);
+        grid.add(new Label("OPENAI_MODEL"), 0, 1);
+        grid.add(modelField, 1, 1);
+        GridPane.setHgrow(keyField, Priority.ALWAYS);
+        GridPane.setHgrow(modelField, Priority.ALWAYS);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().setPrefWidth(640);
+        applyDialogTheme(dialog);
+
+        Optional<ButtonType> result = dialog.showAndWait();
+        if (result.isEmpty() || result.get() != saveButton) {
             return;
         }
 
-        String key = result.get().trim();
+        String key = keyField.getText() == null ? "" : keyField.getText().trim();
+        String model = modelField.getText() == null ? "" : modelField.getText().trim();
+        if (model.isBlank()) {
+            model = DEFAULT_OPENAI_MODEL;
+        }
+        if (key.isBlank()) {
+            info("Missing OPENAI_KEY", "OPENAI_KEY cannot be empty.");
+            return;
+        }
+
         try {
             keyStore.save(key);
             runtimeApiKey = key;
-            String envMessage = EnvVarInstaller.installOpenAiKey(key);
-            info("API key saved", "Stored in app config. " + envMessage);
+            runtimeModelName = model;
+            ignoreEnvironmentKey = false;
+            ignoreEnvironmentModel = false;
+            System.setProperty("OPENAI_MODEL", model);
+            String envMessage = EnvVarInstaller.installOpenAiSettings(key, model);
+            info("OpenAI Settings Saved", "Stored in app config. " + envMessage);
         } catch (Exception ex) {
-            error("Could not save key", ex.getMessage());
+            error("Could Not Save Settings", ex.getMessage());
         }
     }
 
@@ -933,9 +1053,14 @@ public final class MainWindow {
         try {
             keyStore.clear();
             runtimeApiKey = null;
-            info("Done", "Local API key store cleared.");
+            runtimeModelName = DEFAULT_OPENAI_MODEL;
+            ignoreEnvironmentKey = true;
+            ignoreEnvironmentModel = true;
+            System.setProperty("OPENAI_MODEL", runtimeModelName);
+            String envMessage = EnvVarInstaller.clearOpenAiSettings();
+            info("Done", "API key cleared for this session. " + envMessage + " OPENAI_MODEL reset to default for this session.");
         } catch (Exception ex) {
-            error("Could not clear key", ex.getMessage());
+            error("Could Not Clear Key", ex.getMessage());
         }
     }
 
@@ -943,11 +1068,60 @@ public final class MainWindow {
         if (runtimeApiKey != null && !runtimeApiKey.isBlank()) {
             return runtimeApiKey;
         }
-        String env = System.getenv("OPENAI_KEY");
-        if (env != null && !env.isBlank()) {
-            return env;
+        if (!ignoreEnvironmentKey) {
+            String env = System.getenv("OPENAI_KEY");
+            if (env != null && !env.isBlank()) {
+                return env;
+            }
         }
         return keyStore.read().orElse(null);
+    }
+
+    private String resolveCurrentKey() {
+        if (!ignoreEnvironmentKey) {
+            String env = System.getenv("OPENAI_KEY");
+            if (env != null && !env.isBlank()) {
+                return env.trim();
+            }
+        }
+        String resolved = resolvedKey();
+        return resolved == null ? "" : resolved;
+    }
+
+    private String resolveCurrentModelName() {
+        if (!ignoreEnvironmentModel) {
+            String envModel = System.getenv("OPENAI_MODEL");
+            if (envModel != null && !envModel.isBlank()) {
+                return envModel.trim();
+            }
+        }
+        if (runtimeModelName != null && !runtimeModelName.isBlank()) {
+            return runtimeModelName.trim();
+        }
+        String runtimeProperty = System.getProperty("OPENAI_MODEL");
+        if (runtimeProperty != null && !runtimeProperty.isBlank()) {
+            return runtimeProperty.trim();
+        }
+        return DEFAULT_OPENAI_MODEL;
+    }
+
+    private boolean ensureOpenAiSettingsConfigured() {
+        String key = resolvedKey();
+        if (key == null || key.isBlank()) {
+            error("Missing OPENAI_KEY", "Set it in environment or File -> Set OpenAI Key and Model.");
+            return false;
+        }
+
+        String model = resolveCurrentModelName();
+        if (model == null || model.isBlank()) {
+            error("Missing OPENAI_MODEL", "Set OPENAI_MODEL in File -> Set OpenAI Key and Model.");
+            return false;
+        }
+
+        runtimeApiKey = key.trim();
+        runtimeModelName = model.trim();
+        System.setProperty("OPENAI_MODEL", runtimeModelName);
+        return true;
     }
 
     private void selectConversation(long id) {
@@ -962,18 +1136,19 @@ public final class MainWindow {
     private String baseHtml(String body) {
         return """
                 <html><head><meta charset=\"UTF-8\"><style>
-                body { font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; color: #212529; padding: 18px; background: #ffffff; }
-                h1,h2,h3 { margin-top: 1.2em; }
-                pre { background: #f1f4f9; border: 1px solid #d6dee8; border-radius: 8px; padding: 10px; overflow-x: auto; }
-                code { background: #f1f4f9; padding: 2px 5px; border-radius: 4px; }
-                blockquote { border-left: 4px solid #b22020; margin: 10px 0; padding-left: 10px; color: #444; }
+                body { font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; color: #dbe4f0; padding: 18px; background: #0b1326; }
+                h1,h2,h3 { margin-top: 1.2em; color: #eef4ff; }
+                a { color: #93c5fd; }
+                pre { background: #111c34; border: 1px solid #2b3a54; border-radius: 8px; padding: 10px; overflow-x: auto; }
+                code { background: #111c34; color: #dbe4f0; padding: 2px 5px; border-radius: 4px; }
+                blockquote { border-left: 4px solid #3b82f6; margin: 10px 0; padding-left: 10px; color: #b9c8dd; }
                                 .copy-code-btn {
                                     position: absolute;
                                     top: 8px;
                                     right: 8px;
-                                    border: 1px solid #b7c0cc;
-                                    background: #ffffff;
-                                    color: #4b5563;
+                                    border: 1px solid #3a4a66;
+                                    background: #0f172a;
+                                    color: #dbe4f0;
                                     border-radius: 7px;
                                     width: 28px;
                                     height: 28px;
@@ -982,13 +1157,13 @@ public final class MainWindow {
                                     line-height: 1;
                                 }
                                 .copy-code-btn:hover {
-                                    background: #f3f6fb;
-                                    color: #1f2937;
+                                    background: #1a2740;
+                                    color: #f8fafc;
                                 }
-                                .thinking { margin-top: 14px; color: #6a7585; display: flex; align-items: center; gap: 8px; }
-                                .thinking-label { font-weight: 600; color: #b22020; }
+                                .thinking { margin-top: 14px; color: #9caec8; display: flex; align-items: center; gap: 8px; }
+                                .thinking-label { font-weight: 600; color: #93c5fd; }
                                 .thinking-dots { display: inline-flex; gap: 4px; }
-                                .thinking-dots span { width: 7px; height: 7px; border-radius: 50%; background: #8f99a8; display: inline-block; animation: thinking-bounce 1.2s infinite ease-in-out; }
+                                .thinking-dots span { width: 7px; height: 7px; border-radius: 50%; background: #6f84a7; display: inline-block; animation: thinking-bounce 1.2s infinite ease-in-out; }
                                 .thinking-dots span:nth-child(2) { animation-delay: 0.18s; }
                                 .thinking-dots span:nth-child(3) { animation-delay: 0.36s; }
                                 @keyframes thinking-bounce {
@@ -1020,13 +1195,25 @@ public final class MainWindow {
     private void info(String title, String text) {
         Alert alert = new Alert(Alert.AlertType.INFORMATION, text, ButtonType.OK);
         alert.setHeaderText(title);
+        applyDialogTheme(alert);
         alert.showAndWait();
     }
 
     private void error(String title, String text) {
         Alert alert = new Alert(Alert.AlertType.ERROR, text, ButtonType.OK);
         alert.setHeaderText(title);
+        applyDialogTheme(alert);
         alert.showAndWait();
+    }
+
+    private static void applyDialogTheme(Dialog<?> dialog) {
+        DialogPane pane = dialog.getDialogPane();
+        if (!pane.getStylesheets().contains(THEME_STYLESHEET)) {
+            pane.getStylesheets().add(THEME_STYLESHEET);
+        }
+        if (!pane.getStyleClass().contains("app-dialog")) {
+            pane.getStyleClass().add("app-dialog");
+        }
     }
 
         private void bindTranscriptEnhancements() {
@@ -1081,6 +1268,10 @@ public final class MainWindow {
         }
 
         private void switchConversationTabs(Long conversationId) {
+            if (activeConversationId != null && !activeConversationId.equals(conversationId)) {
+                disposeConversationWebTabs(activeConversationId);
+            }
+
             activeConversationId = conversationId;
             contentTabs.getTabs().setAll(chatTab);
 
@@ -1093,6 +1284,49 @@ public final class MainWindow {
                 contentTabs.getTabs().add(tab.tab());
             }
             contentTabs.getSelectionModel().select(chatTab);
+        }
+
+        private void disposeAllWebTabs() {
+            List<Long> ids = new ArrayList<>(webTabsByConversation.keySet());
+            for (Long id : ids) {
+                if (id != null) {
+                    disposeConversationWebTabs(id);
+                }
+            }
+        }
+
+        private void disposeConversationWebTabs(long conversationId) {
+            List<WebTab> tabs = webTabsByConversation.remove(conversationId);
+            if (tabs == null) {
+                return;
+            }
+            for (WebTab tab : tabs) {
+                disposeWebTab(tab);
+            }
+        }
+
+        private void disposeWebTab(WebTab tab) {
+            if (tab == null) {
+                return;
+            }
+
+            try {
+                tab.webView().getEngine().getLoadWorker().cancel();
+            } catch (Exception ignored) {
+                // No-op
+            }
+
+            try {
+                tab.webView().getEngine().load("about:blank");
+            } catch (Exception ignored) {
+                // No-op
+            }
+
+            try {
+                tab.tab().setContent(null);
+            } catch (Exception ignored) {
+                // No-op
+            }
         }
 
         private List<WebTab> loadPersistedWebTabs(long conversationId) {
@@ -1184,6 +1418,7 @@ public final class MainWindow {
                         webTabsByConversation.remove(conversationId);
                     }
                 }
+                disposeWebTab(new WebTab(tab, webView, persistedId));
                 if (persistedId != null) {
                     try {
                         chatService.deleteWebTab(persistedId);
@@ -1233,13 +1468,13 @@ public final class MainWindow {
                         activeLinkMenu.hide();
                     }
 
-                    MenuItem openBrowser = new MenuItem("open in browser");
-                    openBrowser.setOnAction(e -> hostServices.showDocument(url));
-
-                    MenuItem openTab = new MenuItem("open in new tab");
+                    MenuItem openTab = new MenuItem("Open in New Tab");
                     openTab.setOnAction(e -> openInAppTab(url));
 
-                    ContextMenu menu = new ContextMenu(openBrowser, openTab);
+                    MenuItem openBrowser = new MenuItem("Open in Browser");
+                    openBrowser.setOnAction(e -> hostServices.showDocument(url));
+
+                    ContextMenu menu = new ContextMenu(openTab, openBrowser);
                     menu.setAutoHide(true);
                     activeLinkMenu = menu;
 
@@ -1280,13 +1515,13 @@ public final class MainWindow {
                         activeLinkMenu.hide();
                     }
 
-                    MenuItem openBrowser = new MenuItem("open in browser");
-                    openBrowser.setOnAction(e -> hostServices.showDocument(url));
-
-                    MenuItem openTab = new MenuItem("open in new tab");
+                    MenuItem openTab = new MenuItem("Open in New Tab");
                     openTab.setOnAction(e -> openInAppTab(url));
 
-                    ContextMenu menu = new ContextMenu(openBrowser, openTab);
+                    MenuItem openBrowser = new MenuItem("Open in Browser");
+                    openBrowser.setOnAction(e -> hostServices.showDocument(url));
+
+                    ContextMenu menu = new ContextMenu(openTab, openBrowser);
                     menu.setAutoHide(true);
                     activeLinkMenu = menu;
 

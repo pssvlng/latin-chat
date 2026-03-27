@@ -30,6 +30,10 @@ public final class ChatService {
         repository.deleteConversation(conversationId);
     }
 
+    public void deleteAllConversations() throws SQLException {
+        repository.deleteAllConversations();
+    }
+
     public List<Message> listMessages(long conversationId) throws SQLException {
         return repository.listMessages(conversationId);
     }

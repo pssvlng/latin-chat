@@ -22,4 +22,7 @@ if [ ! -d "$LIB_DIR" ]; then
   exit 1
 fi
 
-java -cp "$JAR_PATH:$LIB_DIR/*" com.passivlingo.latinchat.AppLauncher
+DEFAULT_JAVA_OPTS="-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxRAMPercentage=60 -XX:InitiatingHeapOccupancyPercent=30"
+JAVA_OPTS="${JAVA_OPTS:-$DEFAULT_JAVA_OPTS}"
+
+java $JAVA_OPTS -cp "$JAR_PATH:$LIB_DIR/*" com.passivlingo.latinchat.AppLauncher
