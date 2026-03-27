@@ -19,8 +19,11 @@
 *.tar.gz
 *.rar
 
-# Allow checked-in deploy release artifacts only
-!deploy/spqr-latin-chat-*_*.zip
+# Maven build output (includes generated .xml/.lst reports and status files)
+/target/
+
+# Allow checked-in deploy release artifacts
+!deploy/*.zip
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
