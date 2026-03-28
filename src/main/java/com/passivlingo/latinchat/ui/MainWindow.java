@@ -464,7 +464,10 @@ public final class MainWindow {
         MenuItem analyze = new MenuItem("Analyze");
         analyze.setOnAction(event -> Platform.runLater(() -> beginGrammarAnalysis(selectedText)));
 
-        ContextMenu menu = new ContextMenu(analyze);
+        MenuItem copy = new MenuItem("Copy");
+        copy.setOnAction(event -> copyToClipboard(selectedText, "Text copied"));
+
+        ContextMenu menu = new ContextMenu(analyze, copy);
         menu.setAutoHide(true);
         activeLinkMenu = menu;
 
@@ -488,7 +491,10 @@ public final class MainWindow {
         MenuItem translate = new MenuItem("Translate");
         translate.setOnAction(event -> Platform.runLater(() -> beginSelectionTranslation(selectedText)));
 
-        ContextMenu menu = new ContextMenu(translate);
+        MenuItem copy = new MenuItem("Copy");
+        copy.setOnAction(event -> copyToClipboard(selectedText, "Text copied"));
+
+        ContextMenu menu = new ContextMenu(translate, copy);
         menu.setAutoHide(true);
         activeLinkMenu = menu;
 
@@ -1753,7 +1759,10 @@ public final class MainWindow {
                     MenuItem openBrowser = new MenuItem("Open in Browser");
                     openBrowser.setOnAction(e -> hostServices.showDocument(url));
 
-                    ContextMenu menu = new ContextMenu(openTab, openBrowser);
+                    MenuItem copyLink = new MenuItem("Copy Link");
+                    copyLink.setOnAction(e -> copyToClipboard(url, "Link copied"));
+
+                    ContextMenu menu = new ContextMenu(openTab, openBrowser, copyLink);
                     menu.setAutoHide(true);
                     activeLinkMenu = menu;
 
@@ -1770,18 +1779,7 @@ public final class MainWindow {
 
             public void copyCode(String value) {
                 String text = value == null ? "" : value.replace("\r\n", "\n");
-                Runnable copyAction = () -> {
-                    ClipboardContent content = new ClipboardContent();
-                    content.putString(text);
-                    boolean copied = Clipboard.getSystemClipboard().setContent(content);
-                    showCopyToast(copied ? "Code copied" : "Copy failed");
-                };
-
-                if (Platform.isFxApplicationThread()) {
-                    copyAction.run();
-                } else {
-                    Platform.runLater(copyAction);
-                }
+                copyToClipboard(text, "Code copied");
             }
 
             public void showLinkMenu(String url, double x, double y) {
@@ -1800,7 +1798,10 @@ public final class MainWindow {
                     MenuItem openBrowser = new MenuItem("Open in Browser");
                     openBrowser.setOnAction(e -> hostServices.showDocument(url));
 
-                    ContextMenu menu = new ContextMenu(openTab, openBrowser);
+                    MenuItem copyLink = new MenuItem("Copy Link");
+                    copyLink.setOnAction(e -> copyToClipboard(url, "Link copied"));
+
+                    ContextMenu menu = new ContextMenu(openTab, openBrowser, copyLink);
                     menu.setAutoHide(true);
                     activeLinkMenu = menu;
 
@@ -1811,6 +1812,22 @@ public final class MainWindow {
                         menu.show(transcriptView, stage.getX() + stage.getWidth() / 2.0, stage.getY() + stage.getHeight() / 2.0);
                     }
                 });
+            }
+        }
+
+        private void copyToClipboard(String value, String successToast) {
+            String text = value == null ? "" : value.replace("\r\n", "\n");
+            Runnable copyAction = () -> {
+                ClipboardContent content = new ClipboardContent();
+                content.putString(text);
+                boolean copied = Clipboard.getSystemClipboard().setContent(content);
+                showCopyToast(copied ? successToast : "Copy failed");
+            };
+
+            if (Platform.isFxApplicationThread()) {
+                copyAction.run();
+            } else {
+                Platform.runLater(copyAction);
             }
         }
 
