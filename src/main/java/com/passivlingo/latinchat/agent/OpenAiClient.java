@@ -77,7 +77,7 @@ public final class OpenAiClient {
                 JsonNode strictRetryPayload = mapper.createObjectNode()
                         .put("model", model)
                         .put("input", userPrompt)
-                        .put("instructions", systemPrompt + "\\n\\nSi quaestio ad res recentes pertinet, instrumentum web_search_preview ANTE responsionem adhibe.")
+                    .put("instructions", systemPrompt + "\\n\\nIf the user asks about recent or current events, use web_search_preview before answering.")
                         .put("temperature", 0.2)
                         .put("max_output_tokens", 1200)
                         .put("tool_choice", "required")

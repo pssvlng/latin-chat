@@ -8,6 +8,7 @@ import com.passivlingo.latinchat.data.ChatService;
 import com.passivlingo.latinchat.model.Conversation;
 import com.passivlingo.latinchat.model.ConversationWebTab;
 import com.passivlingo.latinchat.model.GrammarAnalysisResult;
+import com.passivlingo.latinchat.model.LanguageConfig;
 import com.passivlingo.latinchat.model.Message;
 import com.passivlingo.latinchat.platform.EnvVarInstaller;
 import com.passivlingo.latinchat.util.MarkdownRenderer;
@@ -44,10 +45,13 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
@@ -56,7 +60,8 @@ public final class MainWindow {
     private static final int RENDER_MESSAGE_LIMIT = 120;
     private static final int MAX_SENTENCE_CONTEXT_WORDS = 70;
     private static final String DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
-    private static final DateTimeFormatter CHAT_TITLE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss");
+    private static final String DEFAULT_OPENAI_LANG = "la";
+    private static final DateTimeFormatter CHAT_TITLE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
     private static final Pattern WORD_PATTERN = Pattern.compile("\\p{L}[\\p{L}\\p{M}\\-]*");
     private static final Pattern SENTENCE_BOUNDARY = Pattern.compile("(?<=[.!?])\\s+");
     private static final String THEME_STYLESHEET = ChatTheme.stylesheetUri();
@@ -83,8 +88,10 @@ public final class MainWindow {
 
     private String runtimeApiKey;
     private String runtimeModelName;
+    private String runtimeLanguageCsv;
     private boolean ignoreEnvironmentKey;
     private boolean ignoreEnvironmentModel;
+    private boolean ignoreEnvironmentLang;
 
     public MainWindow(Stage stage,
                       ChatService chatService,
@@ -102,8 +109,10 @@ public final class MainWindow {
         this.markdownRenderer = markdownRenderer;
         this.runtimeApiKey = initialApiKey;
         this.runtimeModelName = resolveCurrentModelName();
+        this.runtimeLanguageCsv = resolveCurrentLanguageCsv();
         this.ignoreEnvironmentKey = false;
         this.ignoreEnvironmentModel = false;
+        this.ignoreEnvironmentLang = false;
         System.setProperty("OPENAI_MODEL", this.runtimeModelName);
         this.hostServices = hostServices;
     }
@@ -116,9 +125,14 @@ public final class MainWindow {
         mainContent.setCenter(createCenterPane());
         mainContent.setBottom(createComposer());
 
+        SplitPane workspaceSplit = new SplitPane();
+        workspaceSplit.setOrientation(Orientation.HORIZONTAL);
+        workspaceSplit.getStyleClass().add("workspace-split");
+        workspaceSplit.getItems().addAll(createSidebar(), mainContent);
+        workspaceSplit.setDividerPositions(0.22);
+
         root.setTop(createMenuBar());
-        root.setLeft(createSidebar());
-        root.setCenter(mainContent);
+        root.setCenter(workspaceSplit);
 
         copyToast.setVisible(false);
         copyToast.setManaged(false);
@@ -137,7 +151,7 @@ public final class MainWindow {
         scene.getStylesheets().add(THEME_STYLESHEET);
 
         stage.setScene(scene);
-        stage.setTitle("SPQR Latin Chat");
+        stage.setTitle("SPQR Language Chat");
         stage.setOnCloseRequest(e -> disposeAllWebTabs());
         stage.show();
 
@@ -153,17 +167,19 @@ public final class MainWindow {
 
         MenuItem setKey = new MenuItem("Set OpenAI Key and Model");
         MenuItem clearKey = new MenuItem("Clear OpenAI Key");
+        MenuItem configureLanguage = new MenuItem("Configure Languages");
         MenuItem exit = new MenuItem("Exit");
         MenuItem databaseLocation = new MenuItem("Database Location");
         MenuItem about = new MenuItem("About");
 
         setKey.setOnAction(e -> setOpenAiKey());
         clearKey.setOnAction(e -> clearOpenAiKey());
+        configureLanguage.setOnAction(e -> configureLanguages());
         exit.setOnAction(e -> Platform.exit());
         databaseLocation.setOnAction(e -> showDatabaseLocation());
         about.setOnAction(e -> showAboutDialog());
 
-        fileMenu.getItems().addAll(setKey, clearKey, new SeparatorMenuItem(), exit);
+        fileMenu.getItems().addAll(setKey, clearKey, configureLanguage, new SeparatorMenuItem(), exit);
         helpMenu.getItems().addAll(databaseLocation, new SeparatorMenuItem(), about);
         return new MenuBar(fileMenu, helpMenu);
     }
@@ -180,7 +196,7 @@ public final class MainWindow {
     private void showAboutDialog() {
         Alert alert = new Alert(Alert.AlertType.INFORMATION, "", ButtonType.OK);
         alert.setTitle("About");
-        alert.setHeaderText("SPQR Latin Chat");
+        alert.setHeaderText("SPQR Language Chat");
 
         ImageView icon = new ImageView(AppIconFactory.createSpqrIcon(64));
         icon.setFitWidth(64);
@@ -188,7 +204,7 @@ public final class MainWindow {
         alert.getDialogPane().setGraphic(icon);
 
         Label description = new Label(
-                "SPQR Latin Chat helps you practice Latin conversations, analyze grammar in context, and translate selected text."
+            "SPQR Language Chat helps you practice multilingual conversations, analyze grammar in context, and translate selected text."
         );
         description.setWrapText(true);
 
@@ -235,19 +251,24 @@ public final class MainWindow {
                 titleLabel.setMaxWidth(Double.MAX_VALUE);
                 HBox.setHgrow(titleLabel, Priority.ALWAYS);
 
+                Label languageBadge = new Label(item.languageCode().toUpperCase());
+                languageBadge.setStyle("-fx-font-size: 11px; -fx-text-fill: #c7d4ea; -fx-background-color: #1a2740; -fx-padding: 2 6 2 6; -fx-background-radius: 9;");
+
                 if (item.includeWebSearch()) {
                     Label globe = new Label("🌐");
                     globe.setStyle("-fx-font-size: 13px;");
                     Tooltip.install(globe, new Tooltip("Web search is enabled for this chat"));
 
-                    HBox row = new HBox(8, titleLabel, globe);
+                    HBox row = new HBox(8, titleLabel, languageBadge, globe);
                     row.setAlignment(Pos.CENTER_LEFT);
                     setText(null);
                     setGraphic(row);
                     setTooltip(null);
                 } else {
+                    HBox row = new HBox(8, titleLabel, languageBadge);
+                    row.setAlignment(Pos.CENTER_LEFT);
                     setText(null);
-                    setGraphic(titleLabel);
+                    setGraphic(row);
                     setTooltip(null);
                 }
             }
@@ -256,6 +277,7 @@ public final class MainWindow {
         VBox box = new VBox(10, title, newChat, deleteChat, deleteAllChats, new Separator(Orientation.HORIZONTAL), conversationsList);
         box.setPadding(new Insets(12));
         box.setPrefWidth(280);
+        box.setMinWidth(220);
         box.getStyleClass().add("sidebar");
         VBox.setVgrow(conversationsList, Priority.ALWAYS);
         return box;
@@ -264,7 +286,15 @@ public final class MainWindow {
     private Node createCenterPane() {
         transcriptView.setContextMenuEnabled(false);
         transcriptView.getEngine().loadContent(baseHtml("<p>Start a new conversation.</p>"));
+        Button clearChatButton = new Button("Clear Chat");
+        clearChatButton.setOnAction(e -> clearSelectedConversationMessages());
+
+        HBox chatHeader = new HBox(clearChatButton);
+        chatHeader.setAlignment(Pos.CENTER_RIGHT);
+        chatHeader.setPadding(new Insets(0, 10, 10, 10));
+
         BorderPane chatPane = new BorderPane(transcriptView);
+        chatPane.setTop(chatHeader);
         chatPane.setPadding(new Insets(10));
 
         chatTab.setClosable(false);
@@ -341,7 +371,12 @@ public final class MainWindow {
         });
 
         inputArea.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
-            if (event.getCode() == KeyCode.ENTER && !event.isShiftDown()) {
+            if (event.getCode() == KeyCode.ENTER) {
+                if (event.isShiftDown()) {
+                    inputArea.insertText(inputArea.getCaretPosition(), "\n");
+                    event.consume();
+                    return;
+                }
                 sendMessage();
                 event.consume();
             }
@@ -476,6 +511,7 @@ public final class MainWindow {
             return;
         }
         String key = resolvedKey();
+        LanguageConfig language = selectedConversationLanguage();
 
         Dialog<ButtonType> dialog = new Dialog<>();
         dialog.setTitle("Translate");
@@ -484,25 +520,57 @@ public final class MainWindow {
 
         String analysisPopupFont = "-fx-font-family: Inter, 'SF Pro Text', 'Segoe UI', sans-serif; -fx-font-size: 16px;";
 
-        Label latinLabel = new Label("Selected Text");
-        latinLabel.setStyle(analysisPopupFont);
-        TextArea latinArea = new TextArea(cleanedSelection);
-        latinArea.setEditable(false);
-        latinArea.setWrapText(true);
-        latinArea.setPrefRowCount(8);
-        latinArea.setPrefHeight(240);
-        latinArea.setMaxHeight(Double.MAX_VALUE);
-        latinArea.setStyle(analysisPopupFont);
+        Label sourceLabel = new Label("Selected Text");
+        sourceLabel.setStyle(analysisPopupFont);
+        TextArea sourceArea = new TextArea(cleanedSelection);
+        sourceArea.setEditable(false);
+        sourceArea.setWrapText(true);
+        sourceArea.setPrefRowCount(8);
+        sourceArea.setPrefHeight(240);
+        sourceArea.setMaxHeight(Double.MAX_VALUE);
+        sourceArea.setStyle(analysisPopupFont);
 
-        Label englishLabel = new Label("English Translation");
-        englishLabel.setStyle(analysisPopupFont);
-        TextArea englishArea = new TextArea("Translating...");
-        englishArea.setEditable(false);
-        englishArea.setWrapText(true);
-        englishArea.setPrefRowCount(8);
-        englishArea.setPrefHeight(240);
-        englishArea.setMaxHeight(Double.MAX_VALUE);
-        englishArea.setStyle(analysisPopupFont);
+        List<LanguageConfig> translationTargets = new ArrayList<>(availableConfiguredLanguages());
+        LanguageConfig english = LanguageConfig.fromCode("en").orElse(new LanguageConfig("en", "en", "English", false, false));
+        boolean hasEnglish = translationTargets.stream().anyMatch(cfg -> "en".equals(cfg.baseCode()) && !cfg.transcribed());
+        if (!hasEnglish) {
+            translationTargets.add(0, english);
+        }
+
+        ComboBox<LanguageConfig> targetLanguageBox = new ComboBox<>(FXCollections.observableArrayList(translationTargets));
+        targetLanguageBox.setMaxWidth(Double.MAX_VALUE);
+        targetLanguageBox.setStyle(analysisPopupFont);
+        targetLanguageBox.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(LanguageConfig item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : languageOptionLabel(item) + " (" + item.codeLabel() + ")");
+            }
+        });
+        targetLanguageBox.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(LanguageConfig item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : languageOptionLabel(item) + " (" + item.codeLabel() + ")");
+            }
+        });
+        int englishIndex = 0;
+        for (int i = 0; i < translationTargets.size(); i++) {
+            LanguageConfig cfg = translationTargets.get(i);
+            if ("en".equals(cfg.baseCode()) && !cfg.transcribed()) {
+                englishIndex = i;
+                break;
+            }
+        }
+        targetLanguageBox.getSelectionModel().select(englishIndex);
+
+        TextArea translationArea = new TextArea("Translating...");
+        translationArea.setEditable(false);
+        translationArea.setWrapText(true);
+        translationArea.setPrefRowCount(8);
+        translationArea.setPrefHeight(240);
+        translationArea.setMaxHeight(Double.MAX_VALUE);
+        translationArea.setStyle(analysisPopupFont);
 
         GridPane sideBySide = new GridPane();
         sideBySide.setHgap(12);
@@ -516,27 +584,41 @@ public final class MainWindow {
         rightColumn.setHgrow(Priority.ALWAYS);
         sideBySide.getColumnConstraints().addAll(leftColumn, rightColumn);
 
-        GridPane.setHgrow(latinArea, Priority.ALWAYS);
-        GridPane.setVgrow(latinArea, Priority.ALWAYS);
-        GridPane.setHgrow(englishArea, Priority.ALWAYS);
-        GridPane.setVgrow(englishArea, Priority.ALWAYS);
+        GridPane.setHgrow(sourceArea, Priority.ALWAYS);
+        GridPane.setVgrow(sourceArea, Priority.ALWAYS);
+        GridPane.setHgrow(translationArea, Priority.ALWAYS);
+        GridPane.setVgrow(translationArea, Priority.ALWAYS);
 
-        sideBySide.add(latinLabel, 0, 0);
-        sideBySide.add(englishLabel, 1, 0);
-        sideBySide.add(latinArea, 0, 1);
-        sideBySide.add(englishArea, 1, 1);
+        sideBySide.add(sourceLabel, 0, 0);
+        sideBySide.add(targetLanguageBox, 1, 0);
+        sideBySide.add(sourceArea, 0, 1);
+        sideBySide.add(translationArea, 1, 1);
 
         dialog.getDialogPane().setContent(sideBySide);
         dialog.getDialogPane().setPrefWidth(820);
         applyDialogTheme(dialog);
 
-        CompletableFuture.supplyAsync(() -> {
-            try {
-                return grammarAgentGraph.translateSelection(key, cleanedSelection);
-            } catch (Exception ex) {
-                return "Translation failed: " + ex.getMessage();
-            }
-        }).thenAccept(translation -> Platform.runLater(() -> englishArea.setText(translation == null ? "" : translation.trim())));
+        AtomicLong translationRequestId = new AtomicLong(0);
+        Runnable translateNow = () -> {
+            LanguageConfig target = targetLanguageBox.getValue() == null ? english : targetLanguageBox.getValue();
+            translationArea.setText("Translating...");
+            long requestId = translationRequestId.incrementAndGet();
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return grammarAgentGraph.translateSelection(key, cleanedSelection, language.code(), target.code());
+                } catch (Exception ex) {
+                    return "Translation failed: " + ex.getMessage();
+                }
+            }).thenAccept(translation -> Platform.runLater(() -> {
+                if (requestId != translationRequestId.get()) {
+                    return;
+                }
+                translationArea.setText(translation == null ? "" : translation.trim());
+            }));
+        };
+
+        targetLanguageBox.valueProperty().addListener((obs, oldValue, newValue) -> translateNow.run());
+        translateNow.run();
 
         dialog.showAndWait();
     }
@@ -557,6 +639,7 @@ public final class MainWindow {
                 return;
             }
             String key = resolvedKey();
+            LanguageConfig language = selectedConversationLanguage();
 
             String transcriptContext;
             try {
@@ -589,12 +672,12 @@ public final class MainWindow {
                 analysisContext = cleanedSelection;
             }
 
-            GrammarAnalysisDialog dialog = new GrammarAnalysisDialog(stage, cleanedSelection);
+            GrammarAnalysisDialog dialog = new GrammarAnalysisDialog(stage, cleanedSelection, language.displayName());
             dialog.showLoading();
 
             CompletableFuture.supplyAsync(() -> {
                 try {
-                    return grammarAgentGraph.run(key, cleanedSelection, analysisContext, true);
+                    return grammarAgentGraph.run(key, cleanedSelection, analysisContext, true, language.code());
                 } catch (Exception ex) {
                     return GrammarAnalysisResult.error("Analysis failed: " + ex.getMessage());
                 }
@@ -818,15 +901,44 @@ public final class MainWindow {
         ButtonType createButton = new ButtonType("Create", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(createButton, ButtonType.CANCEL);
 
-        TextField titleField = new TextField(defaultConversationTitle());
+        List<LanguageConfig> options = availableConfiguredLanguages();
+        ComboBox<LanguageConfig> languageBox = new ComboBox<>(FXCollections.observableArrayList(options));
+        languageBox.setMaxWidth(Double.MAX_VALUE);
+        languageBox.setPrefWidth(340);
+        languageBox.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(LanguageConfig item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : languageOptionLabel(item) + " (" + item.codeLabel() + ")");
+            }
+        });
+        languageBox.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(LanguageConfig item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : languageOptionLabel(item) + " (" + item.codeLabel() + ")");
+            }
+        });
+        languageBox.getSelectionModel().select(0);
+
+        TextField titleField = new TextField(defaultConversationTitle(languageBox.getSelectionModel().getSelectedItem().code()));
         titleField.setPromptText("Conversation Title");
         titleField.setPrefWidth(340);
+
+        languageBox.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue != null) {
+                titleField.setText(defaultConversationTitle(newValue.code()));
+            }
+        });
 
         CheckBox includeWebSearchBox = new CheckBox("Include Web Search");
         includeWebSearchBox.setSelected(false);
 
+        Label languageLabel = new Label("Language");
         Label titleLabel = new Label("Conversation Title");
         VBox content = new VBox(12,
+            languageLabel,
+            languageBox,
             titleLabel,
             titleField,
             includeWebSearchBox);
@@ -843,12 +955,15 @@ public final class MainWindow {
         }
 
         String title = titleField.getText() == null ? "" : titleField.getText().trim();
+        LanguageConfig selectedLanguage = languageBox.getValue() == null
+                ? LanguageConfig.defaultLanguage()
+                : languageBox.getValue();
         if (title.isBlank()) {
             return;
         }
 
         try {
-            long id = chatService.createConversation(title, includeWebSearchBox.isSelected());
+            long id = chatService.createConversation(title, includeWebSearchBox.isSelected(), selectedLanguage.code());
             refreshConversations();
             selectConversation(id);
         } catch (SQLException ex) {
@@ -910,6 +1025,35 @@ public final class MainWindow {
         }
     }
 
+    private void clearSelectedConversationMessages() {
+        Conversation selected = conversationsList.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            info("No chat selected", "Select a chat first.");
+            return;
+        }
+
+        Alert alert = new Alert(
+                Alert.AlertType.CONFIRMATION,
+                "Clear all messages in this chat?",
+                ButtonType.YES,
+                ButtonType.NO);
+        alert.setHeaderText("Clear Chat");
+        applyDialogTheme(alert);
+        Optional<ButtonType> result = alert.showAndWait();
+        if (result.orElse(ButtonType.NO) != ButtonType.YES) {
+            return;
+        }
+
+        try {
+            chatService.clearConversationMessages(selected.id());
+            refreshConversations();
+            selectConversation(selected.id());
+            refreshMessages();
+        } catch (SQLException ex) {
+            error("Could not clear chat", ex.getMessage());
+        }
+    }
+
     private void sendMessage() {
         Conversation selected = ensureConversationSelected();
         String message = inputArea.getText().trim();
@@ -938,7 +1082,7 @@ public final class MainWindow {
 
         CompletableFuture.supplyAsync(() -> {
             try {
-                return agentGraph.run(key, message, context, selected.includeWebSearch());
+                return agentGraph.run(key, message, context, selected.includeWebSearch(), selected.languageCode());
             } catch (Exception ex) {
                 return "I encountered an error: " + ex.getMessage();
             }
@@ -962,7 +1106,8 @@ public final class MainWindow {
         }
 
         try {
-            long id = chatService.createConversation(defaultConversationTitle());
+            String defaultLanguageCode = availableConfiguredLanguages().get(0).code();
+            long id = chatService.createConversation(defaultConversationTitle(defaultLanguageCode), defaultLanguageCode);
             refreshConversations();
             selectConversation(id);
             return conversationsList.getSelectionModel().getSelectedItem();
@@ -972,8 +1117,9 @@ public final class MainWindow {
         }
     }
 
-    private static String defaultConversationTitle() {
-        return LocalDateTime.now().format(CHAT_TITLE_FORMATTER) + " chat";
+    private static String defaultConversationTitle(String languageCode) {
+        String suffix = (languageCode == null || languageCode.isBlank()) ? "LA" : languageCode.toUpperCase();
+        return LocalDateTime.now().format(CHAT_TITLE_FORMATTER) + " " + suffix;
     }
 
     private String conversationContext(long conversationId) {
@@ -999,7 +1145,8 @@ public final class MainWindow {
         ButtonType saveButton = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(saveButton, ButtonType.CANCEL);
 
-        TextField keyField = new TextField(resolveCurrentKey());
+        PasswordField keyField = new PasswordField();
+        keyField.setText(resolveCurrentKey());
         keyField.setPromptText("OPENAI_KEY");
 
         TextField modelField = new TextField(resolveCurrentModelName());
@@ -1008,7 +1155,7 @@ public final class MainWindow {
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(10);
-        grid.setPadding(new Insets(6, 2, 2, 2));
+        grid.setPadding(new Insets(14, 14, 10, 14));
         grid.add(new Label("OPENAI_KEY"), 0, 0);
         grid.add(keyField, 1, 0);
         grid.add(new Label("OPENAI_MODEL"), 0, 1);
@@ -1041,8 +1188,9 @@ public final class MainWindow {
             runtimeModelName = model;
             ignoreEnvironmentKey = false;
             ignoreEnvironmentModel = false;
+            ignoreEnvironmentLang = false;
             System.setProperty("OPENAI_MODEL", model);
-            String envMessage = EnvVarInstaller.installOpenAiSettings(key, model);
+            String envMessage = EnvVarInstaller.installOpenAiSettings(key, model, runtimeLanguageCsv);
             info("OpenAI Settings Saved", "Stored in app config. " + envMessage);
         } catch (Exception ex) {
             error("Could Not Save Settings", ex.getMessage());
@@ -1054,11 +1202,13 @@ public final class MainWindow {
             keyStore.clear();
             runtimeApiKey = null;
             runtimeModelName = DEFAULT_OPENAI_MODEL;
+            runtimeLanguageCsv = DEFAULT_OPENAI_LANG;
             ignoreEnvironmentKey = true;
             ignoreEnvironmentModel = true;
+            ignoreEnvironmentLang = true;
             System.setProperty("OPENAI_MODEL", runtimeModelName);
             String envMessage = EnvVarInstaller.clearOpenAiSettings();
-            info("Done", "API key cleared for this session. " + envMessage + " OPENAI_MODEL reset to default for this session.");
+            info("Done", "API key cleared for this session. " + envMessage + " OPENAI_MODEL and OPENAI_LANG reset to defaults for this session.");
         } catch (Exception ex) {
             error("Could Not Clear Key", ex.getMessage());
         }
@@ -1105,6 +1255,134 @@ public final class MainWindow {
         return DEFAULT_OPENAI_MODEL;
     }
 
+    private String resolveCurrentLanguageCsv() {
+        if (runtimeLanguageCsv != null && !runtimeLanguageCsv.isBlank()) {
+            return runtimeLanguageCsv.trim();
+        }
+        if (!ignoreEnvironmentLang) {
+            String env = System.getenv("OPENAI_LANG");
+            if (env != null && !env.isBlank()) {
+                return env.trim();
+            }
+        }
+        String stored = keyStore.readLanguageCsv().orElse("");
+        if (!stored.isBlank()) {
+            return stored;
+        }
+        return DEFAULT_OPENAI_LANG;
+    }
+
+    private List<LanguageConfig> availableConfiguredLanguages() {
+        List<LanguageConfig> configured = LanguageConfig.configuredLanguages(resolveCurrentLanguageCsv());
+        if (configured.isEmpty()) {
+            return List.of(LanguageConfig.defaultLanguage());
+        }
+        return configured;
+    }
+
+    private LanguageConfig selectedConversationLanguage() {
+        Conversation selected = conversationsList.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            return availableConfiguredLanguages().get(0);
+        }
+        return LanguageConfig.fromCode(selected.languageCode()).orElse(LanguageConfig.defaultLanguage());
+    }
+
+    private void configureLanguages() {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Configure Languages");
+        dialog.setHeaderText("Select available chat languages");
+
+        ButtonType saveButton = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(saveButton, ButtonType.CANCEL);
+
+        List<LanguageConfig> options = new ArrayList<>(LanguageConfig.dialogOptions());
+        options.sort(Comparator.comparing(LanguageConfig::displayName, String.CASE_INSENSITIVE_ORDER)
+            .thenComparing(LanguageConfig::code));
+        LinkedHashSet<String> selectedCodes = new LinkedHashSet<>();
+        for (LanguageConfig configured : availableConfiguredLanguages()) {
+            selectedCodes.add(configured.code());
+        }
+
+        GridPane checkGrid = new GridPane();
+        checkGrid.setHgap(18);
+        checkGrid.setVgap(6);
+        checkGrid.setPadding(new Insets(12, 12, 8, 12));
+        Map<String, CheckBox> boxesByCode = new HashMap<>();
+        int columns = 3;
+        int rows = Math.max(1, (int) Math.ceil(options.size() / (double) columns));
+        int index = 0;
+        for (LanguageConfig option : options) {
+            String label = languageOptionLabel(option) + " (" + option.codeLabel() + ")";
+            CheckBox box = new CheckBox(label);
+            box.setSelected(selectedCodes.contains(option.code()));
+            boxesByCode.put(option.code(), box);
+            int col = index / rows;
+            int row = index % rows;
+            checkGrid.add(box, col, row);
+            GridPane.setHgrow(box, Priority.ALWAYS);
+            index++;
+        }
+
+        for (int col = 0; col < columns; col++) {
+            ColumnConstraints constraints = new ColumnConstraints();
+            constraints.setPercentWidth(100.0 / columns);
+            constraints.setHgrow(Priority.ALWAYS);
+            checkGrid.getColumnConstraints().add(constraints);
+        }
+
+        Label hint = new Label("For non-Roman script languages, entries ending with -LA mean transcribed output in Latin alphabet.");
+        hint.setWrapText(true);
+
+        VBox content = new VBox(12, hint, checkGrid);
+        content.setPadding(new Insets(14, 14, 10, 14));
+        dialog.getDialogPane().setContent(content);
+        dialog.getDialogPane().setPrefWidth(980);
+        dialog.getDialogPane().setPrefHeight(760);
+        applyDialogTheme(dialog);
+
+        Optional<ButtonType> result = dialog.showAndWait();
+        if (result.isEmpty() || result.get() != saveButton) {
+            return;
+        }
+
+        List<LanguageConfig> selected = new ArrayList<>();
+        for (LanguageConfig option : options) {
+            CheckBox box = boxesByCode.get(option.code());
+            if (box != null && box.isSelected()) {
+                selected.add(option);
+            }
+        }
+
+        if (selected.isEmpty()) {
+            info("Selection required", "Select at least one language.");
+            return;
+        }
+
+        String csv = LanguageConfig.toCsv(selected);
+        runtimeLanguageCsv = csv;
+        // OPENAI_LANG written via shell profile/setx does not update this running process.
+        // Prefer the in-session value immediately after user saves.
+        ignoreEnvironmentLang = true;
+        try {
+            keyStore.saveLanguageCsv(csv);
+        } catch (Exception ex) {
+            error("Could Not Save Languages", ex.getMessage());
+            return;
+        }
+        String envMessage = EnvVarInstaller.installLanguageConfig(csv);
+        refreshConversations();
+        refreshMessages();
+        info("Languages saved", "OPENAI_LANG updated. " + envMessage);
+    }
+
+    private static String languageOptionLabel(LanguageConfig option) {
+        if (option.nonRomanScript() && option.transcribed()) {
+            return option.displayName() + " (Latin Alphabet)";
+        }
+        return option.displayName();
+    }
+
     private boolean ensureOpenAiSettingsConfigured() {
         String key = resolvedKey();
         if (key == null || key.isBlank()) {
@@ -1120,6 +1398,7 @@ public final class MainWindow {
 
         runtimeApiKey = key.trim();
         runtimeModelName = model.trim();
+        runtimeLanguageCsv = resolveCurrentLanguageCsv();
         System.setProperty("OPENAI_MODEL", runtimeModelName);
         return true;
     }

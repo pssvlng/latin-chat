@@ -139,6 +139,21 @@ public final class ChatTheme {
                 -fx-background-color: #0f172a;
             }
 
+            .workspace-split {
+                -fx-background-color: #0f172a;
+            }
+
+            .workspace-split > .split-pane-divider {
+                -fx-background-color: #1a2740;
+                -fx-padding: 0 1 0 1;
+                -fx-border-color: #273449;
+                -fx-border-width: 0 1 0 1;
+            }
+
+            .workspace-split > .split-pane-divider:hover {
+                -fx-background-color: #243759;
+            }
+
             .tab-pane .tab-header-area .tab-header-background {
                 -fx-background-color: #111c34;
             }

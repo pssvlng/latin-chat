@@ -6,7 +6,9 @@ import com.vladsch.flexmark.util.ast.Node;
 
 public final class MarkdownRenderer {
     private final Parser parser = Parser.builder().build();
-    private final HtmlRenderer renderer = HtmlRenderer.builder().build();
+    private final HtmlRenderer renderer = HtmlRenderer.builder()
+            .softBreak("<br />\n")
+            .build();
 
     public String renderHtml(String markdown) {
         Node document = parser.parse(markdown == null ? "" : markdown);

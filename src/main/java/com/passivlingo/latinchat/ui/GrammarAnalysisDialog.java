@@ -24,9 +24,11 @@ public final class GrammarAnalysisDialog {
     private final WebView contentView = new WebView();
     private final Label titleLabel = new Label("Grammatical Analysis");
     private final String selectedText;
+    private final String sourceLanguageName;
 
-    public GrammarAnalysisDialog(Stage owner, String selectedText) {
+    public GrammarAnalysisDialog(Stage owner, String selectedText, String sourceLanguageName) {
         this.selectedText = selectedText == null ? "" : selectedText.trim();
+        this.sourceLanguageName = sourceLanguageName == null || sourceLanguageName.isBlank() ? "Source" : sourceLanguageName.trim();
         this.stage = new Stage();
         this.stage.initOwner(owner);
         this.stage.initModality(Modality.APPLICATION_MODAL);
@@ -85,7 +87,7 @@ public final class GrammarAnalysisDialog {
             html.append("<h2>Sentence Context</h2>");
             for (GrammarAnalysisResult.SentencePair pair : renderableSentencePairs) {
                 html.append("<div class='sentence-grid'>");
-                html.append("<div><h3>Latin</h3><p>")
+                html.append("<div><h3>").append(escape(sourceLanguageName)).append("</h3><p>")
                     .append(escape(pair.latin()))
                         .append("</p></div>");
                 html.append("<div><h3>English</h3><p>")

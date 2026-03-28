@@ -3,12 +3,14 @@ package com.passivlingo.latinchat.agent;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.passivlingo.latinchat.model.GrammarAnalysisResult;
+import com.passivlingo.latinchat.model.LanguageConfig;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.StateGraph;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -20,52 +22,6 @@ public final class GrammarAgentGraph {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final String FALLBACK_MESSAGE = "Partial analysis generated because the model response was not fully structured.";
-
-    private static final String GRAMMAR_SYSTEM_PROMPT = """
-            You are a strict Latin grammar analyst.
-            Return ONLY valid JSON (no markdown fences, no extra text).
-
-            Required JSON shape:
-            {
-              "status": "ok",
-              "errorMessage": "",
-              "sentencePairs": [
-                {
-                  "latin": "...",
-                  "english": "...",
-                  "latinHighlighted": "... with <mark>...</mark> around selected words ...",
-                  "englishHighlighted": "... with <mark>...</mark> where context translation maps ..."
-                }
-              ],
-              "words": [
-                {
-                  "selectedWord": "...",
-                  "lemma": "...",
-                  "partOfSpeech": "...",
-                  "morphology": "...",
-                  "baseForms": "for verbs include principal parts and conjugation class when possible",
-                  "contextTranslation": "context-sensitive English translation",
-                  "notes": ["..."],
-                  "detailedTable": {
-                    "title": "...",
-                    "headers": ["..."],
-                    "rows": [["...", "..."]]
-                  },
-                  "alternatives": ["..."]
-                }
-              ]
-            }
-
-            Rules:
-            - Use the selected text and transcript context to identify the correct sentence context.
-            - Provide side-by-side translation context in sentencePairs.
-            - sentencePairs must contain at least one item and each item must have non-empty latin and english text.
-            - Do not highlight words in sentencePairs. latin and english should be plain sentence text.
-            - For single-word mode, detailedTable must be present with meaningful paradigm information.
-            - Keep alternatives concise.
-            - If analysis fails, return:
-              {"status":"error","errorMessage":"...","sentencePairs":[],"words":[]}
-            """;
 
     private static final String RETRY_PROMPT = """
             Your previous response did not satisfy strict JSON requirements.
@@ -83,12 +39,17 @@ public final class GrammarAgentGraph {
         this.graph = compileGraph();
     }
 
-    public GrammarAnalysisResult run(String apiKey, String selectedText, String transcriptText, boolean singleWord) throws Exception {
+    public GrammarAnalysisResult run(String apiKey,
+                                     String selectedText,
+                                     String transcriptText,
+                                     boolean singleWord,
+                                     String languageCode) throws Exception {
         Map<String, Object> input = new HashMap<>();
         input.put(GrammarAgentState.API_KEY, safe(apiKey));
         input.put(GrammarAgentState.SELECTED_TEXT, safe(selectedText));
         input.put(GrammarAgentState.TRANSCRIPT_TEXT, safe(transcriptText));
         input.put(GrammarAgentState.SINGLE_WORD, singleWord);
+        input.put(GrammarAgentState.LANGUAGE_CODE, safe(languageCode));
         input.put(GrammarAgentState.RAW_OUTPUT, "");
         input.put(GrammarAgentState.PARSE_ERROR, "");
         input.put(GrammarAgentState.VALID, false);
@@ -101,16 +62,42 @@ public final class GrammarAgentGraph {
         return parseResultJson(finalState.get().resultJson(), finalState.get());
     }
 
-    public String translateSelection(String apiKey, String selectedText) {
+        public String translateSelection(String apiKey,
+                         String selectedText,
+                         String sourceLanguageCode,
+                         String targetLanguageCode) {
         String text = safe(selectedText).trim();
         if (text.isBlank()) {
             return "";
         }
 
+        LanguageConfig sourceLanguage = LanguageConfig.fromCode(sourceLanguageCode).orElse(LanguageConfig.defaultLanguage());
+        String sourceDescriptor = sourceLanguage.transcribed()
+            ? sourceLanguage.displayName() + " (romanized in Latin alphabet)"
+            : sourceLanguage.displayName();
+
+        LanguageConfig targetLanguage = LanguageConfig.fromCode(targetLanguageCode)
+            .orElse(LanguageConfig.fromCode("en").orElse(new LanguageConfig("en", "en", "English", false, false)));
+        String targetDescriptor = targetLanguage.transcribed()
+            ? targetLanguage.displayName() + " (romanized in Latin alphabet)"
+            : targetLanguage.displayName();
+
+        String systemPrompt;
+        if (targetLanguage.transcribed()) {
+            systemPrompt = """
+                You are a translation assistant.
+                Translate the provided text into %s.
+                Output only the translated text.
+                Keep the output romanized in Latin alphabet and do not output native-script characters.
+                """.formatted(targetDescriptor);
+        } else {
+            systemPrompt = "You are a translation assistant. Translate the provided text into " + targetDescriptor + ". Return only the translated text.";
+        }
+
         String translation = client.complete(
                 apiKey,
-                "You are a translation assistant. Translate the provided Latin text into clear English. Return only the English translation text.",
-                "Translate this selected Latin text into English:\n" + text
+            systemPrompt,
+            "Translate this selected " + sourceDescriptor + " text into " + targetDescriptor + ":\n" + text
         );
         return cleanupTranslation(translation);
     }
@@ -119,14 +106,14 @@ public final class GrammarAgentGraph {
         try {
             StateGraph<GrammarAgentState> stateGraph = new StateGraph<>(GrammarAgentState::new)
                     .addNode("first_pass", node_async(state -> {
-                        String output = client.complete(state.apiKey(), GRAMMAR_SYSTEM_PROMPT, grammarUserPrompt(state));
+                    String output = client.complete(state.apiKey(), grammarSystemPrompt(state.languageCode()), grammarUserPrompt(state));
                         return Map.of(GrammarAgentState.RAW_OUTPUT, output);
                     }))
                     .addNode("parse_first", node_async(this::parseNode))
                     .addNode("retry_pass", node_async(state -> {
                         String output = client.complete(
                                 state.apiKey(),
-                                GRAMMAR_SYSTEM_PROMPT,
+                        grammarSystemPrompt(state.languageCode()),
                                 RETRY_PROMPT + "\n\n" + grammarUserPrompt(state)
                         );
                         return Map.of(GrammarAgentState.RAW_OUTPUT, output);
@@ -217,7 +204,7 @@ public final class GrammarAgentGraph {
         String latinForContext = replacedLatin ? fullSentence : currentLatin;
         boolean englishLooksWordOnly = looksWordOnlyEnglish(currentEnglish, selectedWord, latinForContext);
         String englishForContext = (replacedLatin || currentEnglish.isBlank() || englishLooksWordOnly)
-            ? translateSentence(latinForContext, state == null ? "" : state.apiKey())
+            ? translateSentence(latinForContext, state == null ? "" : state.apiKey(), state == null ? "la" : state.languageCode())
             : currentEnglish;
 
         GrammarAnalysisResult.SentencePair fixedPair = new GrammarAnalysisResult.SentencePair(
@@ -278,15 +265,15 @@ public final class GrammarAgentGraph {
         String selected = state == null ? "" : safe(state.selectedText());
         String context = state == null ? "" : safe(state.transcriptText());
 
-        String latinSentence = extractSentenceFromContext(context, selected);
-        if (latinSentence.isBlank()) {
-            latinSentence = selected;
+        String sourceSentence = extractSentenceFromContext(context, selected);
+        if (sourceSentence.isBlank()) {
+            sourceSentence = selected;
         }
 
-        String englishSentence = translateSentence(latinSentence, state == null ? "" : state.apiKey());
+        String englishSentence = translateSentence(sourceSentence, state == null ? "" : state.apiKey(), state == null ? "la" : state.languageCode());
 
         GrammarAnalysisResult.SentencePair pair = new GrammarAnalysisResult.SentencePair(
-                latinSentence,
+                sourceSentence,
                 englishSentence,
                 "",
                 ""
@@ -312,16 +299,22 @@ public final class GrammarAgentGraph {
         ).normalized();
     }
 
-    private String translateSentence(String latinSentence, String apiKey) {
-        String sentence = safe(latinSentence).trim();
+    private String translateSentence(String sourceSentence, String apiKey, String languageCode) {
+        String sentence = safe(sourceSentence).trim();
         if (sentence.isBlank() || apiKey == null || apiKey.isBlank()) {
             return "";
         }
+
+        LanguageConfig language = LanguageConfig.fromCode(languageCode).orElse(LanguageConfig.defaultLanguage());
+        String sourceDescriptor = language.transcribed()
+                ? language.displayName() + " (romanized in Latin alphabet)"
+                : language.displayName();
+
         try {
             String translation = client.complete(
                     apiKey,
-                    "You translate Latin into idiomatic English. Return only the English translation sentence.",
-                    "Translate this full Latin sentence into English: " + sentence
+                    "You translate text into idiomatic English. Return only the English translation sentence.",
+                    "Translate this full " + sourceDescriptor + " sentence into English: " + sentence
             );
             String cleaned = cleanupTranslation(translation);
             if (!cleaned.isBlank()) {
@@ -334,7 +327,7 @@ public final class GrammarAgentGraph {
         try {
             String retry = client.complete(
                     apiKey,
-                    "Translate exactly one full Latin sentence into one full English sentence. Output only English sentence text.",
+                "Translate exactly one full sentence into one full English sentence. Output only English sentence text.",
                     sentence
             );
             return cleanupTranslation(retry);
@@ -435,7 +428,14 @@ public final class GrammarAgentGraph {
     }
 
     private static String grammarUserPrompt(GrammarAgentState state) {
+                LanguageConfig language = LanguageConfig.fromCode(state.languageCode()).orElse(LanguageConfig.defaultLanguage());
+                String sourceDescriptor = language.transcribed()
+                                ? language.displayName() + " (romanized in Latin alphabet)"
+                                : language.displayName();
+
         return """
+                                Source language: %s
+
                 Selected text:
                 %s
 
@@ -444,11 +444,66 @@ public final class GrammarAgentGraph {
                 Transcript context:
                 %s
                 """.formatted(
+                                sourceDescriptor,
                 safe(state.selectedText()),
                 state.singleWord() ? "yes" : "no",
                 safe(state.transcriptText())
         );
     }
+
+        private static String grammarSystemPrompt(String languageCode) {
+                LanguageConfig language = LanguageConfig.fromCode(languageCode).orElse(LanguageConfig.defaultLanguage());
+                String sourceDescriptor = language.transcribed()
+                                ? language.displayName() + " (romanized in Latin alphabet)"
+                                : language.displayName();
+
+                return """
+                                You are a strict grammar analyst for %s.
+                                Return ONLY valid JSON (no markdown fences, no extra text).
+
+                                Required JSON shape:
+                                {
+                                    "status": "ok",
+                                    "errorMessage": "",
+                                    "sentencePairs": [
+                                        {
+                                            "latin": "... full source-language sentence ...",
+                                            "english": "... English translation ...",
+                                            "latinHighlighted": "",
+                                            "englishHighlighted": ""
+                                        }
+                                    ],
+                                    "words": [
+                                        {
+                                            "selectedWord": "...",
+                                            "lemma": "...",
+                                            "partOfSpeech": "...",
+                                            "morphology": "...",
+                                            "baseForms": "for verbs include principal parts and class when possible",
+                                            "contextTranslation": "context-sensitive English translation",
+                                            "notes": ["..."],
+                                            "detailedTable": {
+                                                "title": "...",
+                                                "headers": ["..."],
+                                                "rows": [["...", "..."]]
+                                            },
+                                            "alternatives": ["..."]
+                                        }
+                                    ]
+                                }
+
+                                Rules:
+                                - The source language is %s.
+                                - Use selected text and transcript context to identify the correct sentence context.
+                                - sentencePairs must contain at least one item with non-empty latin and english text.
+                                - In sentencePairs, latin must contain the source-language sentence and english must contain the English translation.
+                                - Do not include highlight tags.
+                                - For single-word mode, detailedTable must be present with meaningful paradigm information.
+                                - Keep alternatives concise.
+                                - If analysis fails, return:
+                                    {"status":"error","errorMessage":"...","sentencePairs":[],"words":[]}
+                                """.formatted(sourceDescriptor, sourceDescriptor.toLowerCase(Locale.ROOT));
+        }
 
     private static String safe(String value) {
         return value == null ? "" : value;

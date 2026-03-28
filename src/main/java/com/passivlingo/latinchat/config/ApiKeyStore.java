@@ -10,6 +10,7 @@ import java.util.Properties;
 
 public final class ApiKeyStore {
     private static final String KEY = "openai.key";
+    private static final String LANGUAGES_KEY = "openai.lang";
     private final Path path;
 
     public ApiKeyStore(Path appHome) {
@@ -17,16 +18,7 @@ public final class ApiKeyStore {
     }
 
     public Optional<String> read() {
-        if (!Files.exists(path)) {
-            return Optional.empty();
-        }
-
-        Properties props = new Properties();
-        try (InputStream in = Files.newInputStream(path)) {
-            props.load(in);
-        } catch (IOException ex) {
-            return Optional.empty();
-        }
+        Properties props = loadProperties();
 
         String value = props.getProperty(KEY);
         if (value == null || value.isBlank()) {
@@ -35,18 +27,51 @@ public final class ApiKeyStore {
         return Optional.of(value.trim());
     }
 
+    public Optional<String> readLanguageCsv() {
+        Properties props = loadProperties();
+        String value = props.getProperty(LANGUAGES_KEY);
+        if (value == null || value.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(value.trim());
+    }
+
     public void save(String value) throws IOException {
         Files.createDirectories(path.getParent());
-        Properties props = new Properties();
+        Properties props = loadProperties();
         props.setProperty(KEY, value);
-        try (OutputStream out = Files.newOutputStream(path)) {
-            props.store(out, "SPQR Latin Chat local configuration");
-        }
+        storeProperties(props);
+    }
+
+    public void saveLanguageCsv(String csv) throws IOException {
+        Files.createDirectories(path.getParent());
+        Properties props = loadProperties();
+        props.setProperty(LANGUAGES_KEY, csv == null ? "la" : csv.trim());
+        storeProperties(props);
     }
 
     public void clear() throws IOException {
         if (Files.exists(path)) {
             Files.delete(path);
+        }
+    }
+
+    private Properties loadProperties() {
+        Properties props = new Properties();
+        if (!Files.exists(path)) {
+            return props;
+        }
+        try (InputStream in = Files.newInputStream(path)) {
+            props.load(in);
+        } catch (IOException ignored) {
+            // Return empty properties on read issues; callers apply safe defaults.
+        }
+        return props;
+    }
+
+    private void storeProperties(Properties props) throws IOException {
+        try (OutputStream out = Files.newOutputStream(path)) {
+            props.store(out, "SPQR Latin Chat local configuration");
         }
     }
 }

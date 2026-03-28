@@ -39,6 +39,7 @@ public final class DatabaseManager {
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         title TEXT NOT NULL,
                         include_web_search INTEGER NOT NULL DEFAULT 0,
+                        language_code TEXT NOT NULL DEFAULT 'la',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
@@ -46,6 +47,9 @@ public final class DatabaseManager {
 
             if (!columnExists("conversations", "include_web_search")) {
                 statement.executeUpdate("ALTER TABLE conversations ADD COLUMN include_web_search INTEGER NOT NULL DEFAULT 0");
+            }
+            if (!columnExists("conversations", "language_code")) {
+                statement.executeUpdate("ALTER TABLE conversations ADD COLUMN language_code TEXT NOT NULL DEFAULT 'la'");
             }
 
             statement.executeUpdate("""

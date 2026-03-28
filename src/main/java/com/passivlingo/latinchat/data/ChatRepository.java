@@ -21,18 +21,23 @@ public final class ChatRepository {
     public synchronized List<Conversation> listConversations() throws SQLException {
         List<Conversation> items = new ArrayList<>();
         try (PreparedStatement ps = db.connection().prepareStatement("""
-            SELECT id, title, include_web_search, created_at, updated_at
+            SELECT id, title, include_web_search, language_code, created_at, updated_at
                 FROM conversations
                 ORDER BY updated_at DESC
                 """)) {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
+                    String languageCode = rs.getString("language_code");
+                    if (languageCode == null || languageCode.isBlank()) {
+                        languageCode = "la";
+                    }
                     items.add(new Conversation(
                             rs.getLong("id"),
                             rs.getString("title"),
                             Instant.parse(rs.getString("created_at")),
                             Instant.parse(rs.getString("updated_at")),
-                            rs.getInt("include_web_search") == 1));
+                            rs.getInt("include_web_search") == 1,
+                            languageCode));
                 }
             }
         }
@@ -40,15 +45,21 @@ public final class ChatRepository {
     }
 
     public synchronized long createConversation(String title, boolean includeWebSearch) throws SQLException {
+        return createConversation(title, includeWebSearch, "la");
+    }
+
+    public synchronized long createConversation(String title, boolean includeWebSearch, String languageCode) throws SQLException {
         Instant now = Instant.now();
+        String safeLanguageCode = (languageCode == null || languageCode.isBlank()) ? "la" : languageCode.trim().toLowerCase();
         try (PreparedStatement ps = db.connection().prepareStatement("""
-                INSERT INTO conversations(title, include_web_search, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO conversations(title, include_web_search, language_code, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 """, PreparedStatement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, title);
             ps.setInt(2, includeWebSearch ? 1 : 0);
-            ps.setString(3, now.toString());
+            ps.setString(3, safeLanguageCode);
             ps.setString(4, now.toString());
+            ps.setString(5, now.toString());
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 if (rs.next()) {
@@ -69,6 +80,21 @@ public final class ChatRepository {
     public synchronized void deleteAllConversations() throws SQLException {
         try (PreparedStatement ps = db.connection().prepareStatement("DELETE FROM conversations")) {
             ps.executeUpdate();
+        }
+    }
+
+    public synchronized void clearConversationMessages(long conversationId) throws SQLException {
+        Instant now = Instant.now();
+        try (PreparedStatement deleteMessages = db.connection().prepareStatement("DELETE FROM messages WHERE conversation_id = ?");
+             PreparedStatement updateConversation = db.connection().prepareStatement("""
+                UPDATE conversations SET updated_at = ? WHERE id = ?
+                """)) {
+            deleteMessages.setLong(1, conversationId);
+            deleteMessages.executeUpdate();
+
+            updateConversation.setString(1, now.toString());
+            updateConversation.setLong(2, conversationId);
+            updateConversation.executeUpdate();
         }
     }
 

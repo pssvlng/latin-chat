@@ -19,11 +19,19 @@ public final class ChatService {
     }
 
     public long createConversation(String title) throws SQLException {
-        return createConversation(title, false);
+        return createConversation(title, false, "la");
     }
 
     public long createConversation(String title, boolean includeWebSearch) throws SQLException {
-        return repository.createConversation(title, includeWebSearch);
+        return createConversation(title, includeWebSearch, "la");
+    }
+
+    public long createConversation(String title, String languageCode) throws SQLException {
+        return createConversation(title, false, languageCode);
+    }
+
+    public long createConversation(String title, boolean includeWebSearch, String languageCode) throws SQLException {
+        return repository.createConversation(title, includeWebSearch, languageCode);
     }
 
     public void deleteConversation(long conversationId) throws SQLException {
@@ -32,6 +40,10 @@ public final class ChatService {
 
     public void deleteAllConversations() throws SQLException {
         repository.deleteAllConversations();
+    }
+
+    public void clearConversationMessages(long conversationId) throws SQLException {
+        repository.clearConversationMessages(conversationId);
     }
 
     public List<Message> listMessages(long conversationId) throws SQLException {

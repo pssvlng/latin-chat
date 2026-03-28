@@ -7,6 +7,7 @@ public final class GrammarAgentState extends org.bsc.langgraph4j.state.AgentStat
     public static final String SELECTED_TEXT = "selectedText";
     public static final String TRANSCRIPT_TEXT = "transcriptText";
     public static final String SINGLE_WORD = "singleWord";
+    public static final String LANGUAGE_CODE = "languageCode";
     public static final String RAW_OUTPUT = "rawOutput";
     public static final String PARSE_ERROR = "parseError";
     public static final String VALID = "valid";
@@ -30,6 +31,10 @@ public final class GrammarAgentState extends org.bsc.langgraph4j.state.AgentStat
 
     public boolean singleWord() {
         return value(SINGLE_WORD, Boolean.FALSE);
+    }
+
+    public String languageCode() {
+        return value(LANGUAGE_CODE, "la");
     }
 
     public String rawOutput() {
